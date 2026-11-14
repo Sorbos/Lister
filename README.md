@@ -30,6 +30,25 @@ Options:
 Tips: use a solid backdrop that contrasts with the card borders (the green sheet works well),
 and leave a finger-width gap between cards.
 
+## Identify the cards (Claude)
+
+Needs an Anthropic API key in `ANTHROPIC_API_KEY` (put `export ANTHROPIC_API_KEY=...` in a local
+`.env` you source; it is git-ignored).
+
+```bash
+lister identify out/batch-001
+```
+
+Each card's front and back go to Claude, which returns year, set, player/subject, team, card #,
+rookie/auto/patch/serial, a condition estimate, and which fields it is unsure of. Results land in
+`out/batch-001/cards.json` with a ready-made eBay title, e.g.
+
+    2005-06 Upper Deck Young Guns Sidney Crosby Pittsburgh Penguins #201 RC
+
+Cards scanned upside down are rotated automatically. Options: `--model`, `--effort low|medium|high`
+(defaults: `claude-opus-5-5`, `medium`; also settable via `LISTER_MODEL` / `LISTER_EFFORT`).
+If Claude ever declines a card, the request automatically falls back to another model.
+
 ## Tests
 
 ```bash

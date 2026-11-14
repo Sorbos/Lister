@@ -6,7 +6,7 @@ Turn 9-up trading-card scans into eBay listings, from your own computer.
 fronts.jpg + backs.jpg
   → split: find each card, straighten, crop with corners visible     (Phase 1 ✅)
   → pair each front with its back by position                         (Phase 1 ✅)
-  → identify: Claude reads year, set, player/subject, team, card #, RC (Phase 2)
+  → identify: Claude reads year, set, player/subject, team, card #, RC (Phase 2 ✅)
   → review: local browser page, edit fields/price/format, approve     (Phase 3)
   → list: upload photos + create listings via eBay Sell APIs          (Phase 4)
 ```
@@ -31,7 +31,8 @@ fronts.jpg + backs.jpg
 - Still to do: detect a card placed upside down (Phase 2 will report orientation and we rotate 180°),
   and support landscape cards (works today, they just stay landscape).
 
-## Phase 2: identification (Claude API)
+## Phase 2: identification (Claude API) ✅
+`src/lister/identify.py`, `src/lister/title.py`, `lister identify`.
 - Send front + back of each card; get structured JSON back:
   `year, manufacturer, set, subset/insert, parallel, card_number, player_or_subject, team, league, sport,
    rookie, autograph, memorabilia, serial_number ("23/99"), graded, orientation_ok, confidence, notes`.

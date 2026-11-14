@@ -36,6 +36,15 @@ def cmd_split(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_identify(args: argparse.Namespace) -> int:
+    from .identify import DEFAULT_EFFORT, DEFAULT_MODEL, identify_batch
+
+    results = identify_batch(args.folder, model=args.model or DEFAULT_MODEL, effort=args.effort or DEFAULT_EFFORT)
+    failed = sum(1 for r in results if r["error"])
+    print(f"Identified {len(results) - failed}/{len(results)} cards → {Path(args.folder) / 'cards.json'}")
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="lister")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -48,6 +57,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--layout", choices=["same", "mirror"], default="same",
                    help="same: each card flipped in place (default). mirror: rows flipped like a page")
     s.set_defaults(func=cmd_split)
+
+    i = sub.add_parser("identify", help="Read each card in a split folder with Claude; writes cards.json")
+    i.add_argument("folder", help="Output folder from `lister split`")
+    i.add_argument("--model", default=None, help="Claude model (default claude-opus-5-5, or $LISTER_MODEL)")
+    i.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"],
+                   help="Reasoning effort (default medium, or $LISTER_EFFORT)")
+    i.set_defaults(func=cmd_identify)
     args = p.parse_args(argv)
     return args.func(args)
 
