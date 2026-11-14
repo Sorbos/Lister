@@ -49,6 +49,24 @@ Cards scanned upside down are rotated automatically. Options: `--model`, `--effo
 (defaults: `claude-opus-5-5`, `medium`; also settable via `LISTER_MODEL` / `LISTER_EFFORT`).
 If Claude ever declines a card, the request automatically falls back to another model.
 
+## Review and approve
+
+```bash
+lister review out/batch-001
+```
+
+Opens a page in your browser (served only on your own computer) showing all 9 cards with their
+front and back. For each card you can:
+- fix any field; fields Claude was unsure of are highlighted ⚠, and the title rebuilds as you type
+  (or type your own title; "Auto title" switches back)
+- choose **Auction** (start price, 1–10 days, optional Buy It Now and reserve) or **Fixed price**
+- mark it "Don't list", or **Approve** it
+
+Set batch defaults at the top (e.g. 7-day auctions from $0.99) and apply them to every card.
+Problems are listed under each card and block approval (empty title, over 80 characters, no price,
+Buy It Now less than 30% above the start price). Everything is saved to `review.json` as you go,
+so you can stop and come back. It also works without `lister identify`; you just fill in fields yourself.
+
 ## Tests
 
 ```bash

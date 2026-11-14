@@ -45,6 +45,13 @@ def cmd_identify(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    from .review import ReviewServer
+
+    ReviewServer(args.folder, port=args.port).serve(open_browser=not args.no_browser)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="lister")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -64,6 +71,12 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"],
                    help="Reasoning effort (default medium, or $LISTER_EFFORT)")
     i.set_defaults(func=cmd_identify)
+
+    r = sub.add_parser("review", help="Open the review page for a split/identified folder")
+    r.add_argument("folder", help="Output folder from `lister split` (and optionally `lister identify`)")
+    r.add_argument("--port", type=int, default=8765)
+    r.add_argument("--no-browser", action="store_true", help="Don't open the browser automatically")
+    r.set_defaults(func=cmd_review)
     args = p.parse_args(argv)
     return args.func(args)
 

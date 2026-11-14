@@ -7,7 +7,7 @@ fronts.jpg + backs.jpg
   → split: find each card, straighten, crop with corners visible     (Phase 1 ✅)
   → pair each front with its back by position                         (Phase 1 ✅)
   → identify: Claude reads year, set, player/subject, team, card #, RC (Phase 2 ✅)
-  → review: local browser page, edit fields/price/format, approve     (Phase 3)
+  → review: local browser page, edit fields/price/format, approve     (Phase 3 ✅)
   → list: upload photos + create listings via eBay Sell APIs          (Phase 4)
 ```
 
@@ -40,7 +40,8 @@ fronts.jpg + backs.jpg
 - Sport vs non-sport is detected too (your sample is a 1978 Muppets set), since eBay uses a different category.
 - Optional later: send all 9 cards of a scan together so the model can use set context.
 
-## Phase 3: review page
+## Phase 3: review page ✅
+`src/lister/review.py`, `src/lister/static/review.html`, `lister review`. Standard library only.
 - `lister review OUTDIR` opens a local page: 9 cards (front/back thumbnails, click to zoom).
 - Editable fields + live title preview with the 80-char counter.
 - Per card: format (Auction / Fixed price), price, auction duration, quantity, condition, skip.

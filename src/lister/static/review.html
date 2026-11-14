@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lister Review</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #677085; --line: #dde1e8;
+  --accent: #2b6cb0; --accent-text: #fff; --ok: #237a4b; --ok-bg: #e5f4ec; --warn: #a15c00;
+  --warn-bg: #fff4e0; --err: #b42318; --err-bg: #fdecea; --input: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --panel: #1d2128; --text: #e7eaf0; --muted: #98a1b3; --line: #2e343e;
+    --accent: #5b9be0; --accent-text: #0d1117; --ok: #5fcf8e; --ok-bg: #173325; --warn: #f0b45a;
+    --warn-bg: #3a2c12; --err: #ff8a80; --err-bg: #3d1c1a; --input: #15181d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 16px; }
+.hrow { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+h1 { font-size: 18px; margin: 0; }
+h1 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.defaults { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-top: 10px; }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; grid-template-columns: 220px 1fr; gap: 16px; }
+.card.skipped { opacity: .55; }
+.card.approved { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
+.imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-content: start; }
+.imgs img { width: 100%; border-radius: 4px; cursor: zoom-in; background: var(--line); }
+.imgs .lbl { font-size: 11px; color: var(--muted); text-align: center; }
+.top { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.pos { font-weight: 600; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--line); color: var(--muted); }
+.chip.high { background: var(--ok-bg); color: var(--ok); }
+.chip.medium, .chip.low { background: var(--warn-bg); color: var(--warn); }
+.title-row { display: flex; gap: 6px; align-items: center; }
+.title-row input { flex: 1; font-weight: 600; font-size: 15px; }
+.count { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; min-width: 44px; text-align: right; }
+.count.over { color: var(--err); font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 10px; margin-top: 10px; }
+label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+label.uncertain input, label.uncertain select { border-color: var(--warn); background: var(--warn-bg); }
+label.check { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; }
+input, select, button { font: inherit; color: var(--text); }
+input[type=text], input[type=number], select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); }
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0 0; padding: 8px 10px 10px; }
+legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.notes { margin-top: 8px; font-size: 13px; color: var(--warn); }
+.errors { margin: 8px 0 0; padding: 0; list-style: none; color: var(--err); font-size: 13px; }
+.actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
+.saved { font-size: 12px; color: var(--muted); }
+.hide { display: none !important; }
+dialog { border: none; padding: 0; background: transparent; max-width: 95vw; max-height: 95vh; }
+dialog img { max-width: 95vw; max-height: 92vh; display: block; }
+dialog::backdrop { background: rgb(0 0 0 / .75); }
+@media (max-width: 700px) {
+  .card { grid-template-columns: 1fr; }
+  .imgs { max-width: 280px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <h1>Lister review <small id="folder"></small></h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="summary" class="saved"></span>
+      <button id="approveAll" class="primary">Approve all ready cards</button>
+    </div>
+  </div>
+  <div class="defaults" id="defaults"></div>
+</header>
+<main id="cards"></main>
+<dialog id="zoom"><img alt=""></dialog>
+
+<script>
+const CONDITIONS = [
+  ["near_mint_or_better", "Near Mint or better"], ["excellent", "Excellent"],
+  ["very_good", "Very Good"], ["poor", "Poor"],
+];
+const TEXT_FIELDS = [
+  ["year", "Year / season"], ["manufacturer", "Manufacturer"], ["set_name", "Set"],
+  ["subset_insert", "Insert / subset"], ["parallel", "Parallel"], ["card_number", "Card #"],
+  ["subject", "Player / subject"], ["team", "Team"], ["league", "League"], ["sport", "Sport"],
+  ["serial_number", "Serial # (e.g. 23/99)"],
+];
+const CHECKS = [["rookie", "Rookie (RC)"], ["autograph", "Autograph"], ["memorabilia", "Patch / relic"], ["graded", "Graded"]];
+const DAYS = [1, 3, 5, 7, 10];
+let state = null, maxLen = 80, timer = null, inflight = Promise.resolve();
+
+const $ = (sel, el = document) => el.querySelector(sel);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null) el.append(kid);
+  return el;
+};
+
+function save(delay = 400) {
+  clearTimeout(timer);
+  $("#summary").textContent = "Saving…";
+  timer = setTimeout(() => {
+    const body = JSON.stringify({ defaults: state.defaults, cards: state.cards });
+    inflight = inflight.then(() =>
+      fetch("/api/state", { method: "POST", headers: { "Content-Type": "application/json" }, body })
+        .then(r => r.ok ? r.json() : Promise.reject(r.status))
+        .then(s => { merge(s); refresh(); })
+        .catch(e => { $("#summary").textContent = "Could not save (" + e + ") – is lister review still running?"; }));
+  }, delay);
+}
+
+// Take server-computed values (titles, errors, approval) without clobbering what the user is typing.
+function merge(s) {
+  s.cards.forEach((sc, i) => {
+    const c = state.cards[i];
+    c.errors = sc.errors; c.approved = sc.approved;
+    if (!c.title_custom) c.title = sc.title;
+  });
+}
+
+function listingFields(obj, onChange, compact) {
+  const wrap = h("div", { class: "grid" });
+  const field = (key, label, input) => wrap.append(h("label", { "data-k": key }, label, input));
+  const num = (key, label, ph) => field(key, label, h("input", {
+    type: "number", min: "0", step: "0.01", value: obj[key] ?? "", placeholder: ph || "",
+    oninput: e => { obj[key] = e.target.value === "" ? null : Number(e.target.value); onChange(); },
+  }));
+  field("format", "Format", h("select", { onchange: e => { obj.format = e.target.value; onChange(true); } },
+    h("option", { value: "auction", selected: obj.format === "auction" }, "Auction"),
+    h("option", { value: "fixed_price", selected: obj.format === "fixed_price" }, "Fixed price (Buy It Now)")));
+  const auction = obj.format === "auction";
+  if (auction) {
+    num("start_price", "Starting price $");
+    field("duration_days", "Length", h("select", { onchange: e => { obj.duration_days = Number(e.target.value); onChange(); } },
+      DAYS.map(d => h("option", { value: d, selected: obj.duration_days === d }, d + (d === 1 ? " day" : " days")))));
+    num("buy_it_now", "Buy It Now $", "optional");
+    if (!compact) num("reserve", "Reserve $", "optional");
+  } else {
+    num("price", "Price $");
+  }
+  return wrap;
+}
+
+function renderDefaults() {
+  const box = $("#defaults");
+  box.replaceChildren(
+    h("strong", { style: "align-self:center;font-size:13px" }, "Batch defaults:"),
+    listingFields(state.defaults, rerender => { if (rerender) renderDefaults(); save(); }, true),
+    h("button", { onclick: () => {
+      state.cards.forEach(c => { if (!c.skip && !c.approved) Object.assign(c.listing, structuredClone(state.defaults)); });
+      renderCards(); save(0);
+    } }, "Apply to all unapproved cards"));
+  $(".grid", box).style.cssText = "display:flex;gap:8px;margin:0;flex-wrap:wrap";
+}
+
+function renderCards() {
+  $("#cards").replaceChildren(...state.cards.map(renderCard));
+  refresh();
+}
+
+function renderCard(c, idx) {
+  const unsure = new Set(c.uncertain || []);
+  const set = (k, v) => { c.info[k] = v; save(); };
+  const img = (name, lbl) => name ? h("div", {}, h("img", { src: "/img/" + name, alt: lbl, loading: "lazy",
+    onclick: e => { const d = $("#zoom"); $("img", d).src = e.target.src; d.showModal(); } }), h("div", { class: "lbl" }, lbl)) : null;
+
+  const titleInput = h("input", { type: "text", value: c.title, "data-role": "title",
+    oninput: e => { c.title = e.target.value; c.title_custom = true; refresh(); save(); } });
+  const autoBtn = h("button", { title: "Rebuild the title from the fields", "data-role": "auto",
+    onclick: () => { c.title_custom = false; save(0); } }, "Auto title");
+
+  const fields = h("div", { class: "grid" },
+    TEXT_FIELDS.map(([k, lbl]) => h("label", { class: unsure.has(k) ? "uncertain" : "" }, lbl + (unsure.has(k) ? " ⚠" : ""),
+      h("input", { type: "text", value: c.info[k] ?? "", oninput: e => set(k, e.target.value) }))),
+    h("label", { class: unsure.has("condition") ? "uncertain" : "" }, "Condition",
+      h("select", { onchange: e => set("condition", e.target.value) },
+        CONDITIONS.map(([v, l]) => h("option", { value: v, selected: c.info.condition === v }, l)))),
+    h("label", { class: unsure.has("category") ? "uncertain" : "" }, "Category",
+      h("select", { onchange: e => set("category", e.target.value) },
+        h("option", { value: "sports", selected: c.info.category === "sports" }, "Sports card"),
+        h("option", { value: "non_sport", selected: c.info.category === "non_sport" }, "Non-sport card"))),
+  );
+  const checks = h("div", { style: "display:flex;gap:14px;flex-wrap:wrap;margin-top:8px" },
+    CHECKS.map(([k, lbl]) => h("label", { class: "check" + (unsure.has(k) ? " uncertain" : "") },
+      h("input", { type: "checkbox", checked: !!c.info[k], onchange: e => set(k, e.target.checked) }), lbl)));
+  const graded = h("div", { class: "grid" + (c.info.graded ? "" : " hide"), "data-role": "graded" },
+    h("label", {}, "Grader", h("input", { type: "text", value: c.info.grader ?? "", placeholder: "PSA, BGS, SGC…", oninput: e => set("grader", e.target.value) })),
+    h("label", {}, "Grade", h("input", { type: "text", value: c.info.grade ?? "", oninput: e => set("grade", e.target.value) })));
+  checks.querySelectorAll("input")[3].addEventListener("change", e => graded.classList.toggle("hide", !e.target.checked));
+
+  const listing = h("fieldset", {}, h("legend", {}, "Listing"),
+    listingFields(c.listing, rerender => { if (rerender) { listing.replaceWith(renderCard(c, idx).querySelector("fieldset")); } save(); }));
+
+  const el = h("section", { class: "card", "data-i": idx },
+    h("div", { class: "imgs" }, img(c.front, "Front"), img(c.back, "Back")),
+    h("div", {},
+      h("div", { class: "top" },
+        h("span", { class: "pos" }, "Card " + c.position),
+        c.confidence ? h("span", { class: "chip " + c.confidence }, c.confidence + " confidence") : h("span", { class: "chip" }, "not identified"),
+        h("span", { class: "chip", "data-role": "status" })),
+      h("div", { class: "title-row" }, titleInput, h("span", { class: "count", "data-role": "count" }), autoBtn),
+      c.notes ? h("div", { class: "notes" }, "Note: " + c.notes) : null,
+      fields, checks, graded, listing,
+      h("ul", { class: "errors", "data-role": "errors" }),
+      h("div", { class: "actions" },
+        h("button", { class: "primary", "data-role": "approve", onclick: () => { c.approved = !c.approved; refresh(); save(0); } }),
+        h("label", { class: "check" }, h("input", { type: "checkbox", checked: c.skip,
+          onchange: e => { c.skip = e.target.checked; if (c.skip) c.approved = false; refresh(); save(0); } }), "Don't list this card"))));
+  return el;
+}
+
+// Update the parts that depend on server results, leaving inputs alone.
+function refresh() {
+  let ready = 0, approved = 0, active = 0;
+  state.cards.forEach((c, i) => {
+    const el = $(`.card[data-i="${i}"]`);
+    if (!el) return;
+    const t = $('[data-role="title"]', el);
+    if (document.activeElement !== t && t.value !== c.title) t.value = c.title;
+    const cnt = $('[data-role="count"]', el);
+    cnt.textContent = c.title.length + "/" + maxLen;
+    cnt.classList.toggle("over", c.title.length > maxLen);
+    $('[data-role="auto"]', el).classList.toggle("hide", !c.title_custom);
+    const errs = c.errors || [];
+    $('[data-role="errors"]', el).replaceChildren(...errs.map(e => h("li", {}, "• " + e)));
+    const ok = !c.skip && errs.length === 0;
+    if (!c.skip) active++;
+    if (ok) ready++;
+    if (c.approved) approved++;
+    const btn = $('[data-role="approve"]', el);
+    btn.textContent = c.approved ? "✓ Approved (click to undo)" : "Approve";
+    btn.disabled = !ok && !c.approved;
+    btn.classList.toggle("primary", !c.approved);
+    const st = $('[data-role="status"]', el);
+    st.className = "chip " + (c.approved ? "high" : !c.skip && errs.length ? "low" : "");
+    st.textContent = c.skip ? "skipped" : c.approved ? "approved" : errs.length ? "needs attention" : "ready";
+    el.classList.toggle("approved", !!c.approved);
+    el.classList.toggle("skipped", !!c.skip);
+  });
+  $("#summary").textContent = `${approved} of ${active} approved · saved`;
+  $("#approveAll").disabled = ready === approved;
+}
+
+$("#approveAll").onclick = () => {
+  state.cards.forEach(c => { if (!c.skip && !(c.errors || []).length) c.approved = true; });
+  refresh(); save(0);
+};
+$("#zoom").onclick = () => $("#zoom").close();
+
+fetch("/api/state").then(r => r.json()).then(s => {
+  state = s; maxLen = s.max_len;
+  $("#folder").textContent = s.folder;
+  renderDefaults(); renderCards();
+});
+</script>
+</body>
+</html>
