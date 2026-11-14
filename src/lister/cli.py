@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from .images import DetectionError, detect_cards, load, pair_backs, save
+from .images import DetectionError, detect_cards, load, pair_backs, write_batch
 
 
 def cmd_split(args: argparse.Namespace) -> int:
@@ -17,21 +17,14 @@ def cmd_split(args: argparse.Namespace) -> int:
     try:
         fronts = detect_cards(load(args.fronts), expected=expected, margin_frac=args.margin)
         backs = detect_cards(load(args.backs), expected=len(fronts), margin_frac=args.margin) if args.backs else []
-        pairs = pair_backs(fronts, backs, args.layout) if backs else [(f, None) for f in fronts]
+        if backs:
+            pair_backs(fronts, backs, args.layout)  # check pairing before writing anything
     except DetectionError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    manifest = []
-    for f, b in pairs:
-        stem = f"card_{f.index:02d}"
-        save(f.image, out / f"{stem}_front.jpg")
-        entry = {"position": f.index, "front": f"{stem}_front.jpg", "tilt_deg": round(f.angle, 2)}
-        if b is not None:
-            save(b.image, out / f"{stem}_back.jpg")
-            entry["back"] = f"{stem}_back.jpg"
-        manifest.append(entry)
-    (out / "manifest.json").write_text(json.dumps({"source": {"fronts": str(args.fronts), "backs": str(args.backs) if args.backs else None}, "cards": manifest}, indent=2))
+    manifest = write_batch(fronts, backs or None, out,
+                           {"fronts": str(args.fronts), "backs": str(args.backs) if args.backs else None}, args.layout)
     print(f"Wrote {len(manifest)} cards to {out}")
     return 0
 
@@ -49,6 +42,52 @@ def cmd_review(args: argparse.Namespace) -> int:
     from .review import ReviewServer
 
     ReviewServer(args.folder, port=args.port).serve(open_browser=not args.no_browser)
+    return 0
+
+
+def default_root() -> Path:
+    import os
+
+    if os.environ.get("LISTER_ROOT"):
+        return Path(os.environ["LISTER_ROOT"])
+    return Path(r"C:\Lister") if os.name == "nt" else Path.home() / "Lister"
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    import threading
+
+    from .config import load_dotenv
+    from .review import ReviewServer
+    from .watcher import Watcher
+
+    root = Path(args.root) if args.root else default_root()
+    root.mkdir(parents=True, exist_ok=True)
+    load_dotenv(root / ".env")  # keys can live in C:\Lister\.env
+    load_dotenv()
+    client = None
+    if not args.no_read:
+        import anthropic
+
+        try:
+            client = anthropic.Anthropic()
+        except Exception as e:
+            print(f"Can't use Claude ({e}). Cards will be cut out but not read; add ANTHROPIC_API_KEY to {root / '.env'}")
+    watcher = Watcher(root, client=client, auto_identify=client is not None, pair_timeout=args.wait * 60)
+    server = ReviewServer(root, port=args.port, hub=True)
+    threading.Thread(target=server.serve, kwargs={"open_browser": not args.no_browser}, daemon=True).start()
+    print(f"Scan into {watcher.inbox}. New batches show up on the review page.")
+    try:
+        watcher.run()
+    except KeyboardInterrupt:
+        print("\nStopped watching. Scans still in the inbox will be picked up next time.")
+    return 0
+
+
+def cmd_batches(args: argparse.Namespace) -> int:
+    from .review import ReviewServer
+
+    root = Path(args.root) if args.root else default_root()
+    ReviewServer(root, port=args.port, hub=True).serve()
     return 0
 
 
@@ -210,6 +249,21 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--port", type=int, default=8765)
     r.add_argument("--no-browser", action="store_true", help="Don't open the browser automatically")
     r.set_defaults(func=cmd_review)
+
+    w = sub.add_parser("watch", help="Process scans that land in the inbox folder automatically")
+    w.add_argument("--root", default=None,
+                   help=r"Lister folder (default: C:\Lister on Windows, ~/Lister elsewhere, or $LISTER_ROOT)")
+    w.add_argument("--port", type=int, default=8765)
+    w.add_argument("--no-browser", action="store_true")
+    w.add_argument("--no-read", action="store_true", help="Cut out and pair cards, but don't read them with Claude")
+    w.add_argument("--wait", type=float, default=10,
+                   help="Minutes a lone scan waits for its back scan before going ahead as fronts only (default 10)")
+    w.set_defaults(func=cmd_watch)
+
+    rv = sub.add_parser("batches", help="Open the page listing every batch (without watching the inbox)")
+    rv.add_argument("--root", default=None)
+    rv.add_argument("--port", type=int, default=8765)
+    rv.set_defaults(func=cmd_batches)
 
     u = sub.add_parser("usage", help="How much Lister's Claude calls have cost, in dollars")
     u.set_defaults(func=cmd_usage)

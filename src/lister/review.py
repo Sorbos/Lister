@@ -15,8 +15,10 @@ import threading
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html import escape as html_escape
 from importlib import resources
 from pathlib import Path
+from urllib.parse import unquote
 
 from .title import MAX_LEN, build_title
 
@@ -174,8 +176,10 @@ def normalise(state: dict) -> dict:
     return state
 
 
-class ReviewServer:
-    def __init__(self, folder: str | Path, port: int = 8765):
+class BatchState:
+    """The review state of one batch folder (review.json), shared by the single and hub servers."""
+
+    def __init__(self, folder: Path):
         self.folder = Path(folder).resolve()
         self.path = self.folder / "review.json"
         self.lock = threading.Lock()
@@ -186,7 +190,6 @@ class ReviewServer:
         self.state = normalise(state)
         self._save()
         self.images = {c[k] for c in self.state["cards"] for k in ("front", "back") if c.get(k)}
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), self._handler())
 
     def claude_cost(self) -> float | None:
         """What identifying this batch cost (from cards.json), if it was identified."""
@@ -196,9 +199,8 @@ class ReviewServer:
         except (ValueError, OSError):
             return None
 
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.httpd.server_address[1]}/"
+    def payload(self) -> dict:
+        return {**self.state, "folder": self.folder.name, "max_len": MAX_LEN, "claude_cost_usd": self.claude_cost()}
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -234,6 +236,110 @@ class ReviewServer:
             self._save()
             return self.state
 
+
+def batch_status(folder: Path) -> dict:
+    """Written by `lister watch`: {"stage": "reading"|"ready"|"error", "message": ...}. No file = ready."""
+    f = folder / "status.json"
+    try:
+        return json.loads(f.read_text()) if f.exists() else {"stage": "ready"}
+    except (ValueError, OSError):
+        return {"stage": "ready"}
+
+
+class ReviewServer:
+    """Serves one batch at / , or (hub mode) every batch under ROOT/batches at /b/<name>/."""
+
+    def __init__(self, folder: str | Path, port: int = 8765, *, hub: bool = False):
+        self.hub = hub
+        self.folder = Path(folder).resolve()
+        self.batches: dict[str, BatchState] = {}
+        self._lock = threading.Lock()
+        if not hub:
+            self.single = BatchState(self.folder)
+            self.path = self.single.path
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), self._handler())
+
+    # convenience for the single-batch case (and tests)
+    @property
+    def state(self) -> dict:
+        return self.single.state
+
+    def update(self, new_state: dict) -> dict:
+        return self.single.update(new_state)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/"
+
+    @property
+    def batches_dir(self) -> Path:
+        return self.folder / "batches"
+
+    def batch(self, name: str) -> BatchState | None:
+        folder = self.batches_dir / name
+        if "/" in name or "\\" in name or name.startswith(".") or not (folder / "manifest.json").exists():
+            return None
+        if batch_status(folder)["stage"] == "reading":
+            return None
+        with self._lock:
+            b = self.batches.get(name)
+            if b is None:
+                b = self.batches[name] = BatchState(folder)
+            return b
+
+    def index_html(self) -> bytes:
+        rows = []
+        folders = sorted((p for p in self.batches_dir.glob("*") if (p / "manifest.json").exists()),
+                         key=lambda p: p.stat().st_mtime, reverse=True) if self.batches_dir.exists() else []
+        for f in folders:
+            st = batch_status(f)
+            n = len(json.loads((f / "manifest.json").read_text()).get("cards", []))
+            approved = listed = 0
+            if (f / "review.json").exists():
+                cards = json.loads((f / "review.json").read_text())["cards"]
+                approved = sum(1 for c in cards if c.get("approved"))
+            if (f / "ebay.json").exists():
+                envs = json.loads((f / "ebay.json").read_text()).get("environments", {})
+                listed = sum(1 for e in envs.values() for c in e["cards"].values() if c.get("listing_id"))
+            cost = None
+            if (f / "cards.json").exists():
+                cost = json.loads((f / "cards.json").read_text()).get("cost_usd")
+            name = html_escape(f.name)
+            note = html_escape(st.get("message") or "")
+            if st["stage"] == "reading":
+                status, link = f'<span class="chip warn">reading… {note}</span>', name
+            elif st["stage"] == "error":
+                status, link = f'<span class="chip err">{note or "problem"}</span>', f'<a href="b/{name}/">{name}</a>'
+            else:
+                bits = [f"{n} cards", f"{approved} approved"] + ([f"{listed} listed"] if listed else [])
+                if note:
+                    bits.append(note)
+                status, link = '<span class="chip">' + " · ".join(bits) + "</span>", f'<a href="b/{name}/">{name}</a>'
+            thumb = f'<img src="b/{name}/img/card_01_front.jpg" alt="">' if st["stage"] != "reading" else ""
+            money = "" if cost is None else (f"${cost:.2f}" if cost >= 0.995 else f"{cost * 100:.1f}¢")
+            rows.append(f"<li>{thumb}<div><b>{link}</b><br>{status} <small>{money}</small></div></li>")
+        problems = []
+        pdir = self.folder / "problems"
+        if pdir.exists():
+            for note in sorted(pdir.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+                problems.append(f"<li><b>{html_escape(note.stem)}</b>: {html_escape(note.read_text().strip())}</li>")
+        page = resources.files("lister").joinpath("static/hub.html").read_text()
+        page = page.replace("{{ROWS}}", "\n".join(rows) or "<p>No batches yet. Scan into the inbox folder.</p>")
+        page = page.replace("{{INBOX}}", html_escape(str(self.folder / "inbox")))
+        page = page.replace("{{PROBLEMS}}", ("<h2>Problems</h2><ul class=problems>" + "".join(problems) + "</ul>")
+                            if problems else "")
+        return page.encode()
+
+    def _resolve(self, path: str) -> tuple[BatchState | None, str]:
+        """Map a URL path to (batch, sub-path)."""
+        path = path.split("?")[0]
+        if not self.hub:
+            return self.single, path
+        if path.startswith("/b/"):
+            name, _, rest = path[3:].partition("/")
+            return self.batch(unquote(name)), "/" + rest
+        return None, path
+
     def _handler(self):
         server = self
 
@@ -241,11 +347,13 @@ class ReviewServer:
             def log_message(self, *a):  # keep the terminal quiet
                 pass
 
-            def _send(self, code: int, body: bytes, ctype: str) -> None:
+            def _send(self, code: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
                 self.send_response(code)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -253,21 +361,28 @@ class ReviewServer:
                 self._send(code, json.dumps(obj).encode(), "application/json")
 
             def do_GET(self):
-                if self.path in ("/", "/index.html"):
+                if server.hub and self.path.split("?")[0] in ("/", "/index.html"):
+                    return self._send(200, server.index_html(), "text/html; charset=utf-8")
+                if server.hub and self.path.startswith("/b/") and self.path.count("/") == 2:
+                    return self._send(301, b"", "text/plain", {"Location": self.path + "/"})
+                batch, sub = server._resolve(self.path)
+                if batch is None:
+                    return self._send(404, b"not found (still being read?)", "text/plain")
+                if sub in ("/", "/index.html"):
                     html = resources.files("lister").joinpath("static/review.html").read_bytes()
                     return self._send(200, html, "text/html; charset=utf-8")
-                if self.path == "/api/state":
-                    return self._json({**server.state, "folder": server.folder.name, "max_len": MAX_LEN,
-                                       "claude_cost_usd": server.claude_cost()})
-                if self.path.startswith("/img/"):
-                    name = self.path[len("/img/"):].split("?")[0]
-                    if name in server.images:  # only files from the manifest
-                        f = server.folder / name
+                if sub == "/api/state":
+                    return self._json({**batch.payload(), "hub": server.hub})
+                if sub.startswith("/img/"):
+                    name = unquote(sub[len("/img/"):])
+                    if name in batch.images:  # only files from the manifest
+                        f = batch.folder / name
                         return self._send(200, f.read_bytes(), mimetypes.guess_type(name)[0] or "image/jpeg")
                 self._send(404, b"not found", "text/plain")
 
             def do_POST(self):
-                if self.path != "/api/state":
+                batch, sub = server._resolve(self.path)
+                if batch is None or sub != "/api/state":
                     return self._send(404, b"not found", "text/plain")
                 # Reject requests from other websites (a page you visit can't edit your drafts).
                 origin = self.headers.get("Origin")
@@ -277,12 +392,14 @@ class ReviewServer:
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 except (ValueError, json.JSONDecodeError):
                     return self._send(400, b"bad json", "text/plain")
-                self._json({**server.update(body), "folder": server.folder.name, "max_len": MAX_LEN})
+                batch.update(body)
+                self._json({**batch.payload(), "hub": server.hub})
 
         return Handler
 
     def serve(self, open_browser: bool = True) -> None:
-        print(f"Review page: {self.url}  (Ctrl+C to stop; edits are saved to {self.path})")
+        where = "all batches" if self.hub else f"edits are saved to {self.path}"
+        print(f"Review page: {self.url}  (Ctrl+C to stop; {where})")
         if open_browser:
             threading.Timer(0.5, webbrowser.open, [self.url]).start()
         try:

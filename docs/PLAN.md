@@ -84,6 +84,15 @@ Uses eBay's Sell Inventory API (`inventory_item` → `offer` → `publish`) and 
 
 Keys go in a local `.env` file that is never committed.
 
+## Watch folder ✅
+`src/lister/watcher.py`, `src/lister/pairing.py`, `lister watch`, `lister batches`, `scripts/Lister Watch.bat`.
+- Root `C:\Lister` on Windows (inbox / batches / done / problems).
+- Pairing: shape match (same spots within ~10 mm after sheet shift, same size within 2%) **and** a
+  low-resolution Claude check of which sheet is fronts/backs and whether they're the same cards.
+  Measured on the samples: flipping moves cards ≤5 mm; neighbouring cards are 61 mm apart.
+- Fronts-only batches when the check fails or no back arrives within 10 minutes.
+- Review page lists all batches (`/`), each batch at `/b/<name>/`.
+
 ## Phase 5: nice-to-haves
 - Price hints from recently sold listings.
 - CSV export (eBay bulk upload) as a fallback.

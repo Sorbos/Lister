@@ -10,6 +10,40 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+## Watch folder (the everyday way)
+
+Set your scanner to save into `C:\Lister\inbox`, start Lister, and scan. Each scan is cut into
+cards, paired with its back scan, read by Claude, and shows up on the review page by itself.
+
+```
+C:\Lister\inbox\      ← scanner saves here
+C:\Lister\batches\    ← one folder per batch (cards, details, review state)
+C:\Lister\done\       ← original scans, moved here once used
+C:\Lister\problems\   ← scans Lister couldn't use, with a .txt note saying why
+C:\Lister\.env         ← your keys (ANTHROPIC_API_KEY=..., eBay keys)
+```
+
+**Start it:** double-click `scripts\Lister Watch.bat` (copy it to your desktop), or run
+`lister watch`. A browser page lists every batch; it refreshes by itself. Close the window to stop.
+Scans left in the inbox are picked up next time.
+
+**How fronts and backs are matched:**
+- Scans are taken in file-name order (`IMG_..._0045`, then `_0046`), once the scanner has
+  finished writing them.
+- A scan is paired with the next one only if the cards sit in the same spots with the same
+  sizes **and** Claude confirms one is fronts and the other is backs of the same cards (about a
+  cent per pair). If you scanned the backs first, they're swapped automatically.
+- Otherwise the scan becomes a **fronts-only** batch, and the next scan waits for its own
+  partner, so one fronts-only batch can't throw off the pairs after it.
+- The last scan waits 10 minutes for its back (`lister watch --wait 5` to change), then goes
+  ahead as fronts only.
+
+Options: `--root D:\Cards` for another folder, `--no-read` to skip Claude (fill in by hand).
+`lister batches` opens the batch list without watching.
+
+**Windows install (once):** install Python 3.11+ from python.org (tick "Add python.exe to PATH"),
+then in a terminal: `pip install git+https://github.com/Sorbos/Lister@claude/ebay-memorabilia-automation-d25668`.
+
 ## Split a scan
 
 Scan the 9 fronts, flip each card where it lies, scan the backs. Then:

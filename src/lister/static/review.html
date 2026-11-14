@@ -139,7 +139,7 @@ function save(delay = 400, extra = {}) {
   timer = setTimeout(() => {
     const body = JSON.stringify({ defaults: state.defaults, schedule: state.schedule, cards: state.cards, ...extra });
     inflight = inflight.then(() =>
-      fetch("/api/state", { method: "POST", headers: { "Content-Type": "application/json" }, body })
+      fetch("api/state", { method: "POST", headers: { "Content-Type": "application/json" }, body })
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
         .then(s => { merge(s); refresh(); renderScheduleError(s.schedule_error); })
         .catch(e => { $("#summary").textContent = "Could not save (" + e + ") – is lister review still running?"; }));
@@ -225,7 +225,7 @@ function renderCards() {
 function renderCard(c, idx) {
   const unsure = new Set(c.uncertain || []);
   const set = (k, v) => { c.info[k] = v; save(); };
-  const img = (name, lbl) => name ? h("div", {}, h("img", { src: "/img/" + name, alt: lbl, loading: "lazy",
+  const img = (name, lbl) => name ? h("div", {}, h("img", { src: "img/" + name, alt: lbl, loading: "lazy",
     onclick: e => { const d = $("#zoom"); $("img", d).src = e.target.src; d.showModal(); } }), h("div", { class: "lbl" }, lbl)) : null;
 
   const titleInput = h("input", { type: "text", value: c.title, "data-role": "title",
@@ -315,9 +315,10 @@ $("#approveAll").onclick = () => {
 };
 $("#zoom").onclick = () => $("#zoom").close();
 
-fetch("/api/state").then(r => r.json()).then(s => {
+fetch("api/state").then(r => r.json()).then(s => {
   state = s; maxLen = s.max_len;
   const c = s.claude_cost_usd;
+  if (s.hub) $("h1").prepend(h("a", { href: "../../", style: "font-size:14px;font-weight:400;margin-right:10px" }, "← All batches"));
   $("#folder").textContent = s.folder + (c == null ? "" :
     " · Claude: " + (c >= 0.995 || c === 0 ? "$" + c.toFixed(2) : (c * 100).toFixed(1) + "¢"));
   renderDefaults(); renderSchedule(); renderCards();

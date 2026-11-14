@@ -179,3 +179,24 @@ def load(path: str | Path) -> np.ndarray:
 
 def save(img: np.ndarray, path: str | Path, quality: int = 95) -> None:
     cv2.imwrite(str(path), img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+
+
+def write_batch(fronts: list[Card], backs: list[Card] | None, out: str | Path, source: dict,
+                layout: str = "same") -> list[dict]:
+    """Save each card's front (and back) image plus manifest.json into OUT. Returns the manifest cards."""
+    import json
+
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    pairs = pair_backs(fronts, backs, layout) if backs else [(f, None) for f in fronts]
+    manifest = []
+    for f, b in pairs:
+        stem = f"card_{f.index:02d}"
+        save(f.image, out / f"{stem}_front.jpg")
+        entry = {"position": f.index, "front": f"{stem}_front.jpg", "tilt_deg": round(f.angle, 2)}
+        if b is not None:
+            save(b.image, out / f"{stem}_back.jpg")
+            entry["back"] = f"{stem}_back.jpg"
+        manifest.append(entry)
+    (out / "manifest.json").write_text(json.dumps({"source": source, "cards": manifest}, indent=2))
+    return manifest
