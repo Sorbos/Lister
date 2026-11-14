@@ -61,6 +61,11 @@ front and back. For each card you can:
   (or type your own title; "Auto title" switches back)
 - choose **Auction** (start price, 1–10 days, optional Buy It Now and reserve) or **Fixed price**
 - mark it "Don't list", or **Approve** it
+- set a **start time** (empty = goes live as soon as it's listed); the page shows when each auction ends
+
+**Staggered endings:** under "Stagger start times", pick when the first card starts and the gap
+(e.g. every 3 minutes), then "Apply". Cards are scheduled in scanner order, so 9 seven-day auctions
+starting Mon 7:00 PM end Mon 7:00, 7:03, … 7:24 PM a week later. eBay allows scheduling up to 3 weeks ahead.
 
 Set batch defaults at the top (e.g. 7-day auctions from $0.99) and apply them to every card.
 Problems are listed under each card and block approval (empty title, over 80 characters, no price,

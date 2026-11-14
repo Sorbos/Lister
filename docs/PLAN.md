@@ -52,6 +52,9 @@ fronts.jpg + backs.jpg
 Uses eBay's Sell Inventory API (`inventory_item` → `offer` → `publish`) and Media API for photos.
 - **Fixed price**: `format=FIXED_PRICE`, Good 'Til Cancelled.
 - **Auction**: `format=AUCTION`, start price, optional reserve and Buy It Now price, 1/3/5/7/10 days.
+- **Scheduled start**: the review page's per-card `start_time` is sent as the offer's scheduled
+  start date, so staggered starts give staggered auction endings. Check eBay's current rules/fees
+  for scheduled listings when building this.
 - Category: Sports Trading Card Singles (hockey etc.) or Non-Sport Trading Card Singles, picked from the Phase 2 result.
 - Item specifics: Sport, League, Player/Athlete, Team, Manufacturer, Set, Season/Year, Card Number,
   Rookie, Parallel/Variety, Autographed, Graded.

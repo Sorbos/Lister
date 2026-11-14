@@ -13,6 +13,7 @@ import json
 import mimetypes
 import threading
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
@@ -34,7 +35,10 @@ DEFAULT_LISTING = {
     "buy_it_now": None,  # auction, optional
     "reserve": None,  # auction, optional
     "duration_days": 7,  # auction
+    "start_time": None,  # UTC ISO string ("2026-11-23T00:05:00Z"); None = start immediately
 }
+MAX_SCHEDULE_AHEAD = timedelta(days=21)  # eBay allows scheduling up to 3 weeks ahead
+DEFAULT_SCHEDULE = {"first_start": None, "interval_minutes": 5}
 
 
 def _blank_info() -> dict:
@@ -67,7 +71,39 @@ def initial_state(folder: Path) -> dict:
             "skip": False,
             "approved": False,
         })
-    return {"defaults": dict(DEFAULT_LISTING), "cards": out}
+    return {"defaults": dict(DEFAULT_LISTING), "schedule": dict(DEFAULT_SCHEDULE), "cards": out}
+
+
+def parse_time(v) -> datetime | None:
+    """Parse an ISO time; naive times are taken as UTC. Returns None for empty/invalid."""
+    if not v:
+        return None
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def iso(t: datetime) -> str:
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def stagger(cards: list[dict], first_start, interval_minutes: float) -> None:
+    """Give each card that will be listed a start time: first_start, +interval, +2×interval, …
+
+    Cards keep their order on the scanner. Skipped and already-approved cards are left alone.
+    """
+    first = parse_time(first_start)
+    if first is None:
+        raise ValueError("Pick when the first card should start")
+    step = timedelta(minutes=max(0, float(interval_minutes or 0)))
+    n = 0
+    for card in sorted(cards, key=lambda c: c["position"]):
+        if card["skip"] or card["approved"]:
+            continue
+        card["listing"]["start_time"] = iso(first + n * step)
+        n += 1
 
 
 def _num(v):
@@ -77,7 +113,7 @@ def _num(v):
         return None
 
 
-def validate_card(card: dict) -> list[str]:
+def validate_card(card: dict, now: datetime | None = None) -> list[str]:
     errs = []
     if card["skip"]:
         return errs
@@ -102,6 +138,13 @@ def validate_card(card: dict) -> list[str]:
             errs.append("Buy It Now must be at least 30% above the starting price (eBay rule)")
         if lst["reserve"] and lst["reserve"] <= start:
             errs.append("Reserve must be above the starting price")
+    start_time = parse_time(lst.get("start_time"))
+    if start_time:
+        now = now or datetime.now(timezone.utc)
+        if start_time <= now:
+            errs.append("Start time is in the past")
+        elif start_time - now > MAX_SCHEDULE_AHEAD:
+            errs.append("eBay allows scheduling at most 3 weeks ahead")
     return errs
 
 
@@ -119,6 +162,8 @@ def normalise(state: dict) -> dict:
         for k in ("price", "start_price", "buy_it_now", "reserve"):
             lst[k] = _num(lst.get(k))
         lst["duration_days"] = int(lst.get("duration_days") or 7)
+        t = parse_time(lst.get("start_time"))
+        lst["start_time"] = iso(t) if t else None
         if lst.get("format") not in ("auction", "fixed_price"):
             lst["format"] = "auction"
         if not card.get("title_custom"):
@@ -135,6 +180,9 @@ class ReviewServer:
         self.path = self.folder / "review.json"
         self.lock = threading.Lock()
         state = json.loads(self.path.read_text()) if self.path.exists() else initial_state(self.folder)
+        state.setdefault("schedule", dict(DEFAULT_SCHEDULE))
+        for c in state["cards"]:
+            c["listing"].setdefault("start_time", None)
         self.state = normalise(state)
         self._save()
         self.images = {c[k] for c in self.state["cards"] for k in ("front", "back") if c.get(k)}
@@ -162,6 +210,16 @@ class ReviewServer:
                 for k in ("title", "title_custom", "skip", "approved"):
                     if k in incoming:
                         card[k] = incoming[k]
+            if "schedule" in new_state:
+                sched = self.state.setdefault("schedule", dict(DEFAULT_SCHEDULE))
+                sched.update({k: new_state["schedule"].get(k) for k in DEFAULT_SCHEDULE if k in new_state["schedule"]})
+            if new_state.get("apply_schedule"):
+                sched = self.state.get("schedule", DEFAULT_SCHEDULE)
+                try:
+                    stagger(self.state["cards"], sched["first_start"], sched["interval_minutes"])
+                    self.state.pop("schedule_error", None)
+                except ValueError as e:
+                    self.state["schedule_error"] = str(e)
             if "defaults" in new_state:
                 self.state["defaults"].update({k: new_state["defaults"].get(k) for k in DEFAULT_LISTING if k in new_state["defaults"]})
             self.state = normalise(self.state)

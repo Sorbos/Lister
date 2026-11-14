@@ -57,6 +57,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
 .saved { font-size: 12px; color: var(--muted); }
 .hide { display: none !important; }
+.ends { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+.sched-err { color: var(--err); font-size: 13px; align-self: center; }
 dialog { border: none; padding: 0; background: transparent; max-width: 95vw; max-height: 95vh; }
 dialog img { max-width: 95vw; max-height: 92vh; display: block; }
 dialog::backdrop { background: rgb(0 0 0 / .75); }
@@ -76,6 +78,7 @@ dialog::backdrop { background: rgb(0 0 0 / .75); }
     </div>
   </div>
   <div class="defaults" id="defaults"></div>
+  <div class="defaults" id="schedule"></div>
 </header>
 <main id="cards"></main>
 <dialog id="zoom"><img alt=""></dialog>
@@ -107,15 +110,30 @@ const h = (tag, attrs = {}, ...kids) => {
   return el;
 };
 
-function save(delay = 400) {
+// Times: the server stores UTC ("…Z"); inputs show your computer's local time.
+const pad = n => String(n).padStart(2, "0");
+const toLocalInput = iso => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const fromLocalInput = v => v ? new Date(v).toISOString() : null;
+const fmtTime = d => d.toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+function endsText(l) {
+  if (l.format !== "auction") return l.start_time ? "Goes live " + fmtTime(new Date(l.start_time)) : "Goes live as soon as it's listed";
+  if (!l.start_time) return `Ends ${l.duration_days} days after it's listed`;
+  return "Ends " + fmtTime(new Date(new Date(l.start_time).getTime() + l.duration_days * 864e5));
+}
+
+function save(delay = 400, extra = {}) {
   clearTimeout(timer);
   $("#summary").textContent = "Saving…";
   timer = setTimeout(() => {
-    const body = JSON.stringify({ defaults: state.defaults, cards: state.cards });
+    const body = JSON.stringify({ defaults: state.defaults, schedule: state.schedule, cards: state.cards, ...extra });
     inflight = inflight.then(() =>
       fetch("/api/state", { method: "POST", headers: { "Content-Type": "application/json" }, body })
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
-        .then(s => { merge(s); refresh(); })
+        .then(s => { merge(s); refresh(); renderScheduleError(s.schedule_error); })
         .catch(e => { $("#summary").textContent = "Could not save (" + e + ") – is lister review still running?"; }));
   }, delay);
 }
@@ -126,6 +144,7 @@ function merge(s) {
     const c = state.cards[i];
     c.errors = sc.errors; c.approved = sc.approved;
     if (!c.title_custom) c.title = sc.title;
+    c.listing.start_time = sc.listing.start_time;
   });
 }
 
@@ -149,6 +168,11 @@ function listingFields(obj, onChange, compact) {
   } else {
     num("price", "Price $");
   }
+  if (!compact) {
+    field("start_time", "Starts (empty = right away)", h("input", { type: "datetime-local", "data-role": "start",
+      value: toLocalInput(obj.start_time), oninput: e => { obj.start_time = fromLocalInput(e.target.value); onChange(); } }));
+    wrap.append(h("div", { class: "ends", "data-role": "ends" }));
+  }
   return wrap;
 }
 
@@ -158,11 +182,32 @@ function renderDefaults() {
     h("strong", { style: "align-self:center;font-size:13px" }, "Batch defaults:"),
     listingFields(state.defaults, rerender => { if (rerender) renderDefaults(); save(); }, true),
     h("button", { onclick: () => {
-      state.cards.forEach(c => { if (!c.skip && !c.approved) Object.assign(c.listing, structuredClone(state.defaults)); });
+      const { start_time, ...defaults } = state.defaults;  // keep each card's own start time
+      state.cards.forEach(c => { if (!c.skip && !c.approved) Object.assign(c.listing, structuredClone(defaults)); });
       renderCards(); save(0);
     } }, "Apply to all unapproved cards"));
   $(".grid", box).style.cssText = "display:flex;gap:8px;margin:0;flex-wrap:wrap";
 }
+
+function renderSchedule() {
+  const sc = state.schedule;
+  const first = h("input", { type: "datetime-local", value: toLocalInput(sc.first_start), style: "width:auto",
+    oninput: e => { sc.first_start = fromLocalInput(e.target.value); save(); } });
+  const gap = h("input", { type: "number", min: "0", step: "1", value: sc.interval_minutes ?? 5, style: "width:80px",
+    oninput: e => { sc.interval_minutes = Number(e.target.value); save(); } });
+  $("#schedule").replaceChildren(
+    h("strong", { style: "align-self:center;font-size:13px" }, "Stagger start times:"),
+    h("label", {}, "First card starts", first),
+    h("label", {}, "Then every (minutes)", gap),
+    h("button", { title: "Cards are scheduled in scanner order; skipped and approved cards are left alone",
+      onclick: () => save(0, { apply_schedule: true }) }, "Apply to all unapproved cards"),
+    h("button", { onclick: () => {
+      state.cards.forEach(c => { if (!c.skip && !c.approved) c.listing.start_time = null; });
+      save(0);
+    } }, "Start all right away"),
+    h("span", { class: "sched-err", id: "schedErr" }));
+}
+function renderScheduleError(msg) { const el = $("#schedErr"); if (el) el.textContent = msg || ""; }
 
 function renderCards() {
   $("#cards").replaceChildren(...state.cards.map(renderCard));
@@ -228,6 +273,10 @@ function refresh() {
     if (!el) return;
     const t = $('[data-role="title"]', el);
     if (document.activeElement !== t && t.value !== c.title) t.value = c.title;
+    const st_in = $('[data-role="start"]', el);
+    if (st_in && document.activeElement !== st_in && fromLocalInput(st_in.value) !== c.listing.start_time) st_in.value = toLocalInput(c.listing.start_time);
+    const ends = $('[data-role="ends"]', el);
+    if (ends) ends.textContent = endsText(c.listing);
     const cnt = $('[data-role="count"]', el);
     cnt.textContent = c.title.length + "/" + maxLen;
     cnt.classList.toggle("over", c.title.length > maxLen);
@@ -261,7 +310,7 @@ $("#zoom").onclick = () => $("#zoom").close();
 fetch("/api/state").then(r => r.json()).then(s => {
   state = s; maxLen = s.max_len;
   $("#folder").textContent = s.folder;
-  renderDefaults(); renderCards();
+  renderDefaults(); renderSchedule(); renderCards();
 });
 </script>
 </body>

@@ -99,3 +99,39 @@ def test_other_websites_cannot_post(server):
     with pytest.raises(urllib.error.HTTPError) as e:
         post(server, {"cards": []}, origin="https://evil.example")
     assert e.value.code == 403
+
+
+def test_stagger_assigns_times_in_scanner_order(server):
+    from datetime import datetime, timedelta, timezone
+
+    first = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0, second=0)
+    state = json.loads(get(server, "/api/state")[1])
+    state["cards"][2]["skip"] = True
+    out = post(server, {"cards": [state["cards"][2]], "schedule": {"first_start": first.isoformat(), "interval_minutes": 5},
+                        "apply_schedule": True})
+    times = [c["listing"]["start_time"] for c in out["cards"]]
+    assert times[2] is None  # skipped card left alone
+    others = [datetime.fromisoformat(t.replace("Z", "+00:00")) for i, t in enumerate(times) if i != 2]
+    assert others[0] == first
+    assert [b - a for a, b in zip(others, others[1:])] == [timedelta(minutes=5)] * 7
+    assert out["cards"][0]["errors"] == []
+    # Persisted
+    assert json.loads((server.folder / "review.json").read_text())["cards"][1]["listing"]["start_time"] == times[1]
+
+
+def test_schedule_needs_first_start(server):
+    out = post(server, {"schedule": {"first_start": None}, "apply_schedule": True})
+    assert "first card" in out["schedule_error"]
+
+
+def test_start_time_limits():
+    from datetime import datetime, timedelta, timezone
+
+    from lister.review import DEFAULT_LISTING, validate_card
+
+    now = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
+    card = {"skip": False, "title": "t", "info": {"subject": "x"}, "listing": dict(DEFAULT_LISTING)}
+    for delta, msg in [(-1, "past"), (22 * 24, "3 weeks"), (2, None)]:
+        card["listing"]["start_time"] = (now + timedelta(hours=delta)).isoformat()
+        errs = validate_card(card, now=now)
+        assert (msg is None and errs == []) or any(msg in e for e in errs)
