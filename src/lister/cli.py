@@ -52,6 +52,113 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ebay():
+    from .config import EbaySettings
+    from .ebay_api import EbayClient
+
+    settings = EbaySettings.load()
+    return settings, EbayClient(settings)
+
+
+def _pick(label: str, options: list[tuple[str, str]], current: str | None) -> str:
+    """Numbered menu; returns the chosen id."""
+    if not options:
+        raise SystemExit(f"No {label} found on your eBay account. Create one in Seller Hub, then run this again.")
+    print(f"\n{label}:")
+    for i, (oid, name) in enumerate(options, 1):
+        print(f"  {i}. {name}{'  (current)' if oid == current else ''}")
+    while True:
+        raw = input(f"Choose 1-{len(options)}" + (" [Enter keeps current]" if current else "") + ": ").strip()
+        if not raw and current:
+            return current
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1][0]
+
+
+def cmd_ebay_login(args: argparse.Namespace) -> int:
+    import webbrowser
+
+    settings, client = _ebay()
+    url = client.consent_url()
+    print(f"Signing in to eBay ({settings.environment}).")
+    print("1. A browser window opens (or open this link yourself):\n   " + url)
+    print("2. Sign in and click 'Agree'.")
+    print("3. Copy the full address of the page you land on and paste it here.")
+    webbrowser.open(url)
+    client.sign_in(input("\nAddress: "))
+    print("Signed in. Next: lister ebay setup")
+    return 0
+
+
+def cmd_ebay_setup(args: argparse.Namespace) -> int:
+    settings, client = _ebay()
+    for kind in ("fulfillment", "payment", "return"):
+        opts = [(p[f"{kind}PolicyId"], p.get("name", "")) for p in client.policies(kind)]
+        label = {"fulfillment": "Shipping policy", "payment": "Payment policy", "return": "Return policy"}[kind]
+        setattr(settings, f"{kind}_policy_id", _pick(label, opts, getattr(settings, f"{kind}_policy_id")))
+    locs = [(l["merchantLocationKey"], l.get("name") or l["merchantLocationKey"]) for l in client.locations()]
+    if locs:
+        settings.location_key = _pick("Item location", locs, settings.location_key)
+    else:
+        print("\nYou have no item location yet; eBay needs one (only city/postcode is shown to buyers).")
+        postal = input("Postal/ZIP code the cards ship from: ").strip()
+        country = input("Country code (US, CA, GB, AU): ").strip().upper()
+        client.create_location("lister-home", "Lister", postal, country)
+        settings.location_key = "lister-home"
+    print("\nScheduled start times:")
+    print("  1. eBay starts them. Works with your computer off; eBay may charge a small fee per scheduled listing.")
+    print("  2. Lister starts them. Free, but `lister list` must stay running until the last card goes live.")
+    choice = input(f"Choose 1-2 [current: {'1' if settings.schedule_mode == 'ebay' else '2'}]: ").strip()
+    if choice in ("1", "2"):
+        settings.schedule_mode = "ebay" if choice == "1" else "local"
+    settings.save()
+    print(f"\nSaved to {settings.saved_path}")
+    return 0
+
+
+def cmd_ebay_status(args: argparse.Namespace) -> int:
+    from .ebay_api import NotSignedIn
+
+    settings, client = _ebay()
+    print(f"Environment: {settings.environment}   Marketplace: {settings.marketplace} ({settings.currency})")
+    try:
+        client.access_token()
+        print("Signed in: yes")
+    except NotSignedIn as e:
+        print(f"Signed in: no ({e})")
+    for k in ("fulfillment_policy_id", "payment_policy_id", "return_policy_id", "location_key", "schedule_mode"):
+        print(f"{k}: {getattr(settings, k) or '(not set: run lister ebay setup)'}")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    from .ebay_api import EbayError, NotSignedIn
+    from .listing import ListingError, approved_cards, list_batch
+
+    settings, client = _ebay()
+    if args.dry_run:
+        try:
+            client.access_token()
+        except NotSignedIn:
+            print("(Not signed in: previewing without eBay's category details.)")
+            client = None
+    else:
+        n = len(approved_cards(Path(args.folder)))
+        where = "the eBay SANDBOX (test site)" if settings.environment == "sandbox" else "eBay — LIVE listings"
+        if not args.yes and input(f"List {n} approved card(s) on {where}? Type yes: ").strip().lower() != "yes":
+            print("Cancelled.")
+            return 1
+    try:
+        list_batch(args.folder, settings, client, dry_run=args.dry_run)
+    except (ListingError, EbayError, NotSignedIn) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped. Progress is saved; run the same command again to continue.")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="lister")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -77,6 +184,18 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--port", type=int, default=8765)
     r.add_argument("--no-browser", action="store_true", help="Don't open the browser automatically")
     r.set_defaults(func=cmd_review)
+
+    e = sub.add_parser("ebay", help="Connect Lister to your eBay account")
+    esub = e.add_subparsers(dest="ebay_cmd", required=True)
+    esub.add_parser("login", help="Sign in to eBay (once; stays signed in for about 18 months)").set_defaults(func=cmd_ebay_login)
+    esub.add_parser("setup", help="Pick shipping/payment/return policies and item location").set_defaults(func=cmd_ebay_setup)
+    esub.add_parser("status", help="Show eBay connection and setup").set_defaults(func=cmd_ebay_status)
+
+    l = sub.add_parser("list", help="List the approved cards in a folder on eBay")
+    l.add_argument("folder")
+    l.add_argument("--dry-run", action="store_true", help="Show exactly what would be sent; send nothing")
+    l.add_argument("--yes", action="store_true", help="Don't ask for confirmation")
+    l.set_defaults(func=cmd_list)
     args = p.parse_args(argv)
     return args.func(args)
 

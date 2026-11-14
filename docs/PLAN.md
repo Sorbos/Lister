@@ -8,7 +8,7 @@ fronts.jpg + backs.jpg
   → pair each front with its back by position                         (Phase 1 ✅)
   → identify: Claude reads year, set, player/subject, team, card #, RC (Phase 2 ✅)
   → review: local browser page, edit fields/price/format, approve     (Phase 3 ✅)
-  → list: upload photos + create listings via eBay Sell APIs          (Phase 4)
+  → list: upload photos + create listings via eBay Sell APIs          (Phase 4 ✅ built; needs sandbox test)
 ```
 
 ## Decisions so far
@@ -48,7 +48,17 @@ fronts.jpg + backs.jpg
 - Batch defaults (e.g. "all auctions, 7 days, start $0.99") applied to all, overridable per card.
 - Drafts are saved to the folder so you can stop and come back.
 
-## Phase 4: eBay listing
+## Phase 4: eBay listing ✅ (built, tested against a simulated eBay; not yet against the real sandbox)
+`src/lister/ebay_api.py`, `src/lister/listing.py`, `src/lister/config.py`; `lister ebay login|setup|status`, `lister list`.
+
+To verify on the first sandbox run (from docs/search, not yet exercised for real):
+- Media API `getImage` response field `imageUrl`, and the multipart field name `image`.
+- Item-specific names for 261328 / 183050 (`Player/Athlete`, `Season`, `Features`, …): Lister reads
+  eBay's list at run time, but our name candidates may need adjusting.
+- Condition descriptor value names ("Near mint or better", grader names) match our lookups.
+- Sandbox accounts may need business policies created via the Account API (no Seller Hub UI).
+- Scheduled-listing fee for your marketplace.
+
 Uses eBay's Sell Inventory API (`inventory_item` → `offer` → `publish`) and Media API for photos.
 - **Fixed price**: `format=FIXED_PRICE`, Good 'Til Cancelled.
 - **Auction**: `format=AUCTION`, start price, optional reserve and Buy It Now price, 1/3/5/7/10 days.
