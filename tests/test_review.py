@@ -135,3 +135,10 @@ def test_start_time_limits():
         card["listing"]["start_time"] = (now + timedelta(hours=delta)).isoformat()
         errs = validate_card(card, now=now)
         assert (msg is None and errs == []) or any(msg in e for e in errs)
+
+
+def test_state_includes_batch_cost(server):
+    data = json.loads((server.folder / "cards.json").read_text())
+    data["cost_usd"] = 0.3421
+    (server.folder / "cards.json").write_text(json.dumps(data))
+    assert json.loads(get(server, "/api/state")[1])["claude_cost_usd"] == 0.3421

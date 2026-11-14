@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
+import pytest
 
 from lister.cli import main
 from lister.identify import CardInfo, identify_batch
@@ -59,7 +60,12 @@ class FakeClient:
 
     def _parse(self, **kw):
         self.calls.append(kw)
-        return SimpleNamespace(stop_reason="end_turn", parsed_output=self.answers.pop(0))
+        answer = self.answers.pop(0)
+        usage = SimpleNamespace(input_tokens=2000, output_tokens=1500, cache_creation_input_tokens=0,
+                                cache_read_input_tokens=0)
+        if answer == "refuse":
+            return SimpleNamespace(stop_reason="refusal", parsed_output=None, model=kw["model"], usage=usage)
+        return SimpleNamespace(stop_reason="end_turn", parsed_output=answer, model=kw["model"], usage=usage)
 
 
 def test_identify_batch_writes_cards_json(tmp_path):
@@ -80,3 +86,37 @@ def test_identify_batch_writes_cards_json(tmp_path):
     # Upside-down card was rotated 180° on disk.
     after = cv2.imread(str(tmp_path / "card_02_front.jpg"))
     assert (cv2.rotate(before, cv2.ROTATE_180).astype(int) - after.astype(int)).__abs__().mean() < 3
+
+
+def test_costs_reported_in_dollars(tmp_path, capsys):
+    from lister.costs import cost_of, summary
+
+    # Opus 5.5: 2000 in × $4/M + 1500 out × $20/M = $0.008 + $0.03
+    assert cost_of("claude-opus-5-5", {"input_tokens": 2000, "output_tokens": 1500}) == pytest.approx(0.038)
+    assert cost_of("claude-haiku-5-5", {"input_tokens": 2000, "output_tokens": 1500}) == pytest.approx(0.00095)
+    assert cost_of("some-unknown-model", {"input_tokens": 1}) is None
+
+    assert main(["split", str(SAMPLES / "fronts_01.jpg"), str(SAMPLES / "backs_01.jpg"), "-o", str(tmp_path)]) == 0
+    answers = [card(subject=f"P{i}") for i in range(1, 10)]
+    answers[4] = "refuse"  # a declined card is still billed
+    lines = []
+    identify_batch(tmp_path, client=FakeClient(answers), model="claude-opus-5-5", progress=lines.append)
+
+    data = json.loads((tmp_path / "cards.json").read_text())
+    assert data["cost_usd"] == pytest.approx(9 * 0.038)
+    assert data["cards"][0]["cost_usd"] == pytest.approx(0.038)
+    assert data["cards"][4]["error"] and data["cards"][4]["cost_usd"] == pytest.approx(0.038)
+    assert any(l.startswith("Claude cost for this batch: 34.2¢ (3.8¢ per card)") for l in lines)
+    assert not any("token" in l.lower() for l in lines)  # dollars only
+
+    s = summary()
+    assert s["cards"] == 9 and s["all_time"] == pytest.approx(0.342) and s["this_month"] == pytest.approx(0.342)
+
+    assert main(["usage"]) == 0
+    out = capsys.readouterr().out
+    assert "All time:     34.2¢  (9 cards, 3.8¢ per card)" in out and "token" not in out.lower()
+
+
+def test_usage_when_nothing_recorded(capsys):
+    assert main(["usage"]) == 0
+    assert "No Claude calls recorded yet." in capsys.readouterr().out

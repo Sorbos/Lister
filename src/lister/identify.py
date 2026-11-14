@@ -70,7 +70,9 @@ def _image_block(path: Path) -> dict:
 
 
 class IdentifyError(RuntimeError):
-    pass
+    def __init__(self, msg: str, usd: float | None = None, model: str | None = None):
+        super().__init__(msg)
+        self.usd, self.model = usd, model  # a declined/unusable answer is still billed
 
 
 def identify_card(
@@ -80,7 +82,10 @@ def identify_card(
     client: anthropic.Anthropic | None = None,
     model: str = DEFAULT_MODEL,
     effort: str = DEFAULT_EFFORT,
-) -> CardInfo:
+) -> tuple[CardInfo, str, float | None]:
+    """Returns (card info, model that answered, cost in dollars or None if unknown)."""
+    from .costs import cost_of
+
     client = client or anthropic.Anthropic()
     content: list[dict] = [{"type": "text", "text": "FRONT:"}, _image_block(Path(front))]
     if back is not None:
@@ -99,11 +104,13 @@ def identify_card(
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
     )
+    served = getattr(response, "model", None) or model  # may differ if a fallback model answered
+    usd = cost_of(served, getattr(response, "usage", None))
     if response.stop_reason == "refusal":
-        raise IdentifyError(f"Model declined to identify {front}")
+        raise IdentifyError(f"Model declined to identify {front}", usd, served)
     if response.stop_reason == "max_tokens" or response.parsed_output is None:
-        raise IdentifyError(f"No usable answer for {front} (stop_reason={response.stop_reason})")
-    return response.parsed_output
+        raise IdentifyError(f"No usable answer for {front} (stop_reason={response.stop_reason})", usd, served)
+    return response.parsed_output, served, usd
 
 
 def identify_batch(
@@ -115,6 +122,7 @@ def identify_batch(
     progress=print,
 ) -> list[dict]:
     """Identify every card in a `lister split` output folder; writes cards.json there."""
+    from .costs import money, record
     from .images import load, save  # local import keeps this module light for tests
     from .title import build_title
 
@@ -122,22 +130,43 @@ def identify_batch(
     manifest = json.loads((folder / "manifest.json").read_text())
     client = client or anthropic.Anthropic()
     results = []
+    total, unpriced = 0.0, 0
+
+    def tally(served, usd, position):
+        nonlocal total, unpriced
+        record(served, usd, folder.name, position)
+        if usd is None:
+            unpriced += 1
+        else:
+            total += usd
+
     for entry in manifest["cards"]:
         front = folder / entry["front"]
         back = folder / entry["back"] if entry.get("back") else None
         progress(f"Card {entry['position']}: reading…")
         try:
-            info = identify_card(front, back, client=client, model=model, effort=effort)
+            info, served, usd = identify_card(front, back, client=client, model=model, effort=effort)
         except (IdentifyError, anthropic.APIStatusError) as e:
+            usd = getattr(e, "usd", None)
+            if isinstance(e, IdentifyError):
+                tally(e.model or model, usd, entry["position"])
             progress(f"Card {entry['position']}: {e}")
-            results.append({**entry, "info": None, "title": None, "error": str(e)})
+            results.append({**entry, "info": None, "title": None, "error": str(e), "cost_usd": usd})
             continue
+        tally(served, usd, entry["position"])
         _fix_orientation(front, info.front_orientation, load, save)
         title = build_title(info)
-        progress(f"Card {entry['position']}: {title}  [{info.confidence}]")
-        results.append({**entry, "info": info.model_dump(), "title": title, "error": None})
+        progress(f"Card {entry['position']}: {title}  [{info.confidence}, {money(usd)}]")
+        results.append({**entry, "info": info.model_dump(), "title": title, "error": None, "cost_usd": usd})
 
-    (folder / "cards.json").write_text(json.dumps({"model": model, "cards": results}, indent=2))
+    (folder / "cards.json").write_text(json.dumps(
+        {"model": model, "cost_usd": round(total, 4), "cards": results}, indent=2))
+    n = len(results)
+    line = f"Claude cost for this batch: {money(total)} ({money(total / n if n else 0)} per card)"
+    if unpriced:
+        line += f"; {unpriced} card(s) used a model with no known price, not included"
+    progress(line)
+    progress("Running total: lister usage")
     return results
 
 

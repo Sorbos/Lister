@@ -188,6 +188,14 @@ class ReviewServer:
         self.images = {c[k] for c in self.state["cards"] for k in ("front", "back") if c.get(k)}
         self.httpd = ThreadingHTTPServer(("127.0.0.1", port), self._handler())
 
+    def claude_cost(self) -> float | None:
+        """What identifying this batch cost (from cards.json), if it was identified."""
+        f = self.folder / "cards.json"
+        try:
+            return json.loads(f.read_text()).get("cost_usd") if f.exists() else None
+        except (ValueError, OSError):
+            return None
+
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.httpd.server_address[1]}/"
@@ -249,7 +257,8 @@ class ReviewServer:
                     html = resources.files("lister").joinpath("static/review.html").read_bytes()
                     return self._send(200, html, "text/html; charset=utf-8")
                 if self.path == "/api/state":
-                    return self._json({**server.state, "folder": server.folder.name, "max_len": MAX_LEN})
+                    return self._json({**server.state, "folder": server.folder.name, "max_len": MAX_LEN,
+                                       "claude_cost_usd": server.claude_cost()})
                 if self.path.startswith("/img/"):
                     name = self.path[len("/img/"):].split("?")[0]
                     if name in server.images:  # only files from the manifest

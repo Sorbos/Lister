@@ -49,6 +49,22 @@ Cards scanned upside down are rotated automatically. Options: `--model`, `--effo
 (defaults: `claude-opus-5-5`, `medium`; also settable via `LISTER_MODEL` / `LISTER_EFFORT`).
 If Claude ever declines a card, the request automatically falls back to another model.
 
+**Cost:** each card's cost shows as it's read, and the run ends with the batch total, e.g.
+`Claude cost for this batch: 34.2¢ (3.8¢ per card)`. The review page shows it next to the batch name.
+For your running total:
+
+```bash
+lister usage
+```
+```
+Claude cost (estimated from list prices; your Anthropic Console has the exact bill)
+  Last 7 days:  34.2¢
+  This month:   $1.37
+  All time:     $4.12  (108 cards, 3.8¢ per card)
+```
+Every call is logged in `~/.config/lister/usage.jsonl`. These are estimates from Anthropic's list
+prices; the Usage and Cost pages in the Anthropic Console show the exact bill.
+
 ## Review and approve
 
 ```bash

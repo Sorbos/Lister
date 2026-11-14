@@ -317,7 +317,9 @@ $("#zoom").onclick = () => $("#zoom").close();
 
 fetch("/api/state").then(r => r.json()).then(s => {
   state = s; maxLen = s.max_len;
-  $("#folder").textContent = s.folder;
+  const c = s.claude_cost_usd;
+  $("#folder").textContent = s.folder + (c == null ? "" :
+    " · Claude: " + (c >= 0.995 || c === 0 ? "$" + c.toFixed(2) : (c * 100).toFixed(1) + "¢"));
   renderDefaults(); renderSchedule(); renderCards();
   if (window.innerWidth > 700) $("#batch").open = true;  // folded away on phones
 });

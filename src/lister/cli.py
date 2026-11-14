@@ -52,6 +52,32 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_usage(args: argparse.Namespace) -> int:
+    from .costs import ledger_path, money, summary
+
+    s = summary()
+    if not s["cards"]:
+        print("No Claude calls recorded yet.")
+        return 0
+    print(f"Claude cost (estimated from list prices; your Anthropic Console has the exact bill)")
+    print(f"  Last 7 days:  {money(s['last_7_days'])}")
+    print(f"  This month:   {money(s['this_month'])}")
+    print(f"  All time:     {money(s['all_time'])}  ({s['cards']} cards, {money(s['all_time'] / s['cards'])} per card)")
+    if len(s["by_model"]) > 1:
+        print("  By model:")
+        for m, usd in sorted(s["by_model"].items(), key=lambda kv: -kv[1]):
+            print(f"    {m:<20} {money(usd)}")
+    recent = list(s["by_folder"].items())[-5:]
+    if recent:
+        print("  Recent batches:")
+        for f, usd in reversed(recent):
+            print(f"    {f:<20} {money(usd)}")
+    if s["unpriced"]:
+        print(f"  ({s['unpriced']} card(s) used a model with no known price and aren't counted)")
+    print(f"Log: {ledger_path()}")
+    return 0
+
+
 def _ebay():
     from .config import EbaySettings
     from .ebay_api import EbayClient
@@ -184,6 +210,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--port", type=int, default=8765)
     r.add_argument("--no-browser", action="store_true", help="Don't open the browser automatically")
     r.set_defaults(func=cmd_review)
+
+    u = sub.add_parser("usage", help="How much Lister's Claude calls have cost, in dollars")
+    u.set_defaults(func=cmd_usage)
 
     e = sub.add_parser("ebay", help="Connect Lister to your eBay account")
     esub = e.add_subparsers(dest="ebay_cmd", required=True)
