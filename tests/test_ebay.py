@@ -302,3 +302,23 @@ def test_nothing_approved(tmp_path, settings):
     (tmp_path / "review.json").write_text(json.dumps(initial_state(tmp_path)))
     with pytest.raises(ListingError, match="No approved"):
         run(tmp_path, settings, None, dry_run=True)
+
+
+def test_dry_run_without_ebay_keys(batch, monkeypatch, capsys):
+    """Showcase before having eBay developer keys: preview works, nothing asks to list for real."""
+    for k in ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "EBAY_RUNAME"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.chdir(batch)  # no .env here
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("must not ask for confirmation"))
+    state = json.loads((batch / "review.json").read_text())
+    for c in state["cards"]:  # this test runs on the real clock; the fixture's start time is fixed in the past
+        c["listing"]["start_time"] = None
+    (batch / "review.json").write_text(json.dumps(state))
+    assert main(["list", str(batch), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "previewing offline" in out and "[dry run]" in out
+    preview = json.loads((batch / "ebay_preview.json").read_text())
+    assert preview[0]["offer"]["listingPolicies"]["fulfillmentPolicyId"] == "(your shipping policy)"
+    # Without --dry-run, missing keys is still a clear error.
+    with pytest.raises(SystemExit, match="Missing EBAY_CLIENT_ID"):
+        main(["list", str(batch)])

@@ -64,14 +64,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
     root.mkdir(parents=True, exist_ok=True)
     load_dotenv(root / ".env")  # keys can live in C:\Lister\.env
     load_dotenv()
+    import os
+
     client = None
     if not args.no_read:
-        import anthropic
+        if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+            print(f"No Anthropic API key found, so cards will be cut out and paired but not read.\n"
+                  f"To have Claude read them, put ANTHROPIC_API_KEY=... in {root / '.env'} and restart.")
+        else:
+            import anthropic
 
-        try:
             client = anthropic.Anthropic()
-        except Exception as e:
-            print(f"Can't use Claude ({e}). Cards will be cut out but not read; add ANTHROPIC_API_KEY to {root / '.env'}")
     watcher = Watcher(root, client=client, auto_identify=client is not None, pair_timeout=args.wait * 60)
     server = ReviewServer(root, port=args.port, hub=True)
     threading.Thread(target=server.serve, kwargs={"open_browser": not args.no_browser}, daemon=True).start()
@@ -197,16 +200,22 @@ def cmd_ebay_status(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    from .config import EbaySettings
     from .ebay_api import EbayError, NotSignedIn
     from .listing import ListingError, approved_cards, list_batch
 
-    settings, client = _ebay()
+    if args.dry_run and not EbaySettings.has_keys():
+        settings, client = EbaySettings.offline(), None
+        print("(No eBay keys yet: previewing offline with placeholder policies.)")
+    else:
+        settings, client = _ebay()
     if args.dry_run:
-        try:
-            client.access_token()
-        except NotSignedIn:
-            print("(Not signed in: previewing without eBay's category details.)")
-            client = None
+        if client is not None:
+            try:
+                client.access_token()
+            except NotSignedIn:
+                print("(Not signed in: previewing without eBay's category details.)")
+                client = None
     else:
         n = len(approved_cards(Path(args.folder)))
         where = "the eBay SANDBOX (test site)" if settings.environment == "sandbox" else "eBay — LIVE listings"
@@ -225,6 +234,11 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles may not show …, ¢, —
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(prog="lister")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("split", help="Split a multi-card scan into individual card images")

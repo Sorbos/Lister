@@ -243,3 +243,28 @@ def test_hub_lists_and_serves_batches(tmp_path):
     finally:
         srv.httpd.shutdown()
         srv.httpd.server_close()
+
+
+def test_python_dash_m_entry_point():
+    import subprocess
+    import sys
+
+    r = subprocess.run([sys.executable, "-m", "lister", "--help"], capture_output=True, text=True)
+    assert r.returncode == 0 and "watch" in r.stdout
+
+
+def test_watch_without_anthropic_key_says_so(tmp_path, monkeypatch, capsys):
+    from lister.cli import main
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    def stop_immediately(self, interval=2.0, stop=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("lister.watcher.Watcher.run", stop_immediately)
+    monkeypatch.setattr("lister.review.ReviewServer.serve", lambda self, open_browser=True: None)
+    assert main(["watch", "--root", str(tmp_path / "L"), "--port", "0", "--no-browser"]) == 0
+    out = capsys.readouterr().out
+    assert "No Anthropic API key found" in out and str(tmp_path / "L" / ".env") in out

@@ -83,6 +83,21 @@ class EbaySettings:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.saved_path.write_text(json.dumps({k: getattr(self, k) for k in self.SAVED_KEYS}, indent=2))
 
+    KEY_VARS = ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "EBAY_RUNAME")
+
+    @classmethod
+    def has_keys(cls) -> bool:
+        load_dotenv()
+        return all(os.environ.get(k) for k in cls.KEY_VARS)
+
+    @classmethod
+    def offline(cls) -> "EbaySettings":
+        """For previews before you have eBay keys: no sign-in, placeholder policies."""
+        mp = os.environ.get("EBAY_MARKETPLACE", "EBAY_US").upper()
+        return cls("", "", "", "sandbox", mp if mp in MARKETPLACES else "EBAY_US",
+                   fulfillment_policy_id="(your shipping policy)", payment_policy_id="(your payment policy)",
+                   return_policy_id="(your return policy)", location_key="(your item location)")
+
     @classmethod
     def load(cls) -> "EbaySettings":
         load_dotenv()

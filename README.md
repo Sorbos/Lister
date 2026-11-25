@@ -3,6 +3,33 @@
 Turn trading-card scans (9 cards at a time) into individual, straightened card photos, and, soon,
 into eBay listings. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
+## Try it on Windows (no eBay account needed)
+
+1. Install **Python 3.11 or newer** from <https://www.python.org/downloads/>. In the installer,
+   tick **"Add python.exe to PATH"**.
+2. Open **Command Prompt** and install Lister:
+   ```
+   py -m pip install https://github.com/Sorbos/Lister/archive/refs/heads/claude/ebay-memorabilia-automation-d25668.zip
+   ```
+3. Create `C:\Lister\.env` (Notepad is fine; save as "All files", name `.env`) containing:
+   ```
+   ANTHROPIC_API_KEY=sk-ant-...
+   ```
+   Without it, Lister still cuts out and pairs cards; it just won't read them.
+4. Download `scripts\Lister Watch.bat` from the repo to your desktop and double-click it. A
+   browser page opens listing your batches.
+5. Point your scanner software at `C:\Lister\inbox` (or copy scans in). Scan 9 fronts, flip,
+   scan the backs. Within a minute or so the batch appears; open it to review and approve.
+6. To see exactly what would be sent to eBay, in Command Prompt:
+   ```
+   cd C:\Lister
+   py -m lister list "C:\Lister\batches\<batch name>" --dry-run
+   ```
+   It writes `ebay_preview.json` in the batch folder. Nothing is sent anywhere.
+7. `py -m lister usage` shows what Claude has cost so far.
+
+To update later, run the same `pip install` line again with `--upgrade`.
+
 ## Install
 
 ```bash
@@ -42,7 +69,7 @@ Options: `--root D:\Cards` for another folder, `--no-read` to skip Claude (fill 
 `lister batches` opens the batch list without watching.
 
 **Windows install (once):** install Python 3.11+ from python.org (tick "Add python.exe to PATH"),
-then in a terminal: `pip install git+https://github.com/Sorbos/Lister@claude/ebay-memorabilia-automation-d25668`.
+then follow *Try it on Windows* above.
 
 ## Split a scan
 
