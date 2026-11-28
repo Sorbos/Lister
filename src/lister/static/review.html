@@ -318,7 +318,13 @@ $("#zoom").onclick = () => $("#zoom").close();
 fetch("api/state").then(r => r.json()).then(s => {
   state = s; maxLen = s.max_len;
   const c = s.claude_cost_usd;
-  if (s.hub) $("h1").prepend(h("a", { href: "../../", style: "font-size:14px;font-weight:400;margin-right:10px" }, "← All batches"));
+  if (s.hub) {
+    document.body.insertAdjacentHTML("afterbegin", s.nav);
+    $("h1").firstChild.textContent = "Batch ";
+  } else {
+    $("header").insertAdjacentHTML("beforeend",
+      '<div class="saved" style="margin-top:4px">Single batch. Run <code>lister watch</code> for all batches, settings and costs.</div>');
+  }
   $("#folder").textContent = s.folder + (c == null ? "" :
     " · Claude: " + (c >= 0.995 || c === 0 ? "$" + c.toFixed(2) : (c * 100).toFixed(1) + "¢"));
   renderDefaults(); renderSchedule(); renderCards();

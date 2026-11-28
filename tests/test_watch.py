@@ -292,3 +292,19 @@ def test_no_key_batch_says_not_read(tmp_path):
     w.make_batch(w.inbox / "IMG_1.jpg", None)
     st = json.loads((w.batches / batches(w)[0] / "status.json").read_text())
     assert "no Anthropic API key" in st["message"]
+
+
+def test_batch_page_gets_nav_in_hub_mode_only(tmp_path):
+    w, clock, _ = make(tmp_path)
+    drop(w, SAMPLES / "fronts_01.jpg", "IMG_1.jpg")
+    folder = w.make_batch(w.inbox / "IMG_1.jpg", None)
+    for hub, root in ((True, w.root), (False, folder)):
+        srv = ReviewServer(root, port=0, hub=hub)
+        threading.Thread(target=srv.httpd.serve_forever, daemon=True).start()
+        try:
+            path = f"b/{folder.name}/api/state" if hub else "api/state"
+            state = json.loads(get(srv.url + path)[1])
+            assert ('href="/costs"' in state["nav"]) if hub else state["nav"] == ""
+        finally:
+            srv.httpd.shutdown()
+            srv.httpd.server_close()

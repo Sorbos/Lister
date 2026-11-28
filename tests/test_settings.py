@@ -95,7 +95,7 @@ def call(srv, path, body=None, origin=None):
 
 def test_settings_page_and_api(hub, tmp_path):
     assert b"Scans folder" in call(hub, "settings")
-    assert b'href="settings"' in call(hub, "")
+    assert b'href="/settings"' in call(hub, "")
     s = json.loads(call(hub, "api/settings"))
     assert s["using_default"] and s["inbox"].endswith("inbox") and s["wait_minutes"] == 10
 
@@ -122,3 +122,18 @@ def test_other_websites_cannot_change_settings(hub, tmp_path):
         call(hub, "api/settings", {"inbox": str(tmp_path)}, origin="https://evil.example")
     assert e.value.code == 403
     assert settings.load(hub.folder)["inbox"] is None
+
+
+def test_every_page_has_the_navigation_bar(hub, tmp_path):
+    from datetime import datetime, timezone
+
+    from lister.costs import record
+
+    record("claude-opus-5-5", 0.038, "2026-11-28_IMG_0045", 1, datetime.now(timezone.utc))
+    for path, active in [("", "/"), ("settings", "/settings"), ("costs", "/costs")]:
+        page = call(hub, path).decode()
+        for link in ('href="/"', 'href="/settings"', 'href="/costs"'):
+            assert link in page, (path, link)
+        assert f'<a href="{active}" class="on">' in page
+    costs = call(hub, "costs").decode()
+    assert "3.8¢" in costs and "2026-11-28_IMG_0045" in costs and "claude-opus-5-5" in costs

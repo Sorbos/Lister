@@ -288,6 +288,25 @@ def batch_status(folder: Path) -> dict:
         return {"stage": "ready"}
 
 
+NAV_PAGES = [("batches", "/", "Batches"), ("settings", "/settings", "Settings"), ("costs", "/costs", "Costs")]
+NAV_CSS = """<style>
+.nav { display: flex; align-items: center; gap: 2px; background: var(--panel); border-bottom: 1px solid var(--line);
+       padding: 0 12px; overflow-x: auto; }
+.nav .brand { font-weight: 700; color: var(--text); padding: 10px 10px 10px 4px; }
+.nav a { padding: 10px 12px; color: var(--muted); text-decoration: none; font-weight: 600; font-size: 14px;
+         border-bottom: 2px solid transparent; white-space: nowrap; }
+.nav a:hover { color: var(--text); }
+.nav a.on { color: var(--text); border-bottom-color: var(--accent); }
+</style>"""
+
+
+def nav_html(active: str) -> str:
+    links = "".join(
+        f'<a href="{href}" class="on">{label}</a>' if key == active else f'<a href="{href}">{label}</a>'
+        for key, href, label in NAV_PAGES)
+    return f'{NAV_CSS}<nav class="nav"><span class="brand">Lister</span>{links}</nav>'
+
+
 class ReviewServer:
     """Serves one batch at / , or (hub mode) every batch under ROOT/batches at /b/<name>/."""
 
@@ -369,9 +388,32 @@ class ReviewServer:
         page = page.replace("{{ROWS}}", "\n".join(rows) or "<p>No batches yet. Scan into the inbox folder.</p>")
         from . import settings
 
+        page = page.replace("{{NAV}}", nav_html("batches"))
         page = page.replace("{{INBOX}}", html_escape(str(settings.inbox(self.folder))))
         page = page.replace("{{PROBLEMS}}", ("<h2>Problems</h2><ul class=problems>" + "".join(problems) + "</ul>")
                             if problems else "")
+        return page.encode()
+
+    def costs_html(self) -> bytes:
+        from .costs import ledger_path, money, summary
+
+        s = summary()
+        tiles = [("Last 7 days", money(s["last_7_days"])), ("This month", money(s["this_month"])),
+                 ("All time", money(s["all_time"])),
+                 ("Per card", money(s["all_time"] / s["cards"]) if s["cards"] else "–")]
+        tiles_html = "".join(f'<div class="tile"><small>{k}</small><b>{v}</b></div>' for k, v in tiles)
+        rows = "".join(f"<tr><td>{html_escape(f)}</td><td>{money(v)}</td></tr>"
+                       for f, v in reversed(list(s["by_folder"].items())[-30:]))
+        models = "".join(f"<tr><td>{html_escape(m)}</td><td>{money(v)}</td></tr>"
+                         for m, v in sorted(s["by_model"].items(), key=lambda kv: -kv[1]))
+        page = resources.files("lister").joinpath("static/costs.html").read_text()
+        for key, val in {"{{NAV}}": nav_html("costs"), "{{TILES}}": tiles_html,
+                         "{{CARDS}}": str(s["cards"]), "{{ROWS}}": rows or '<tr><td colspan=2>Nothing yet</td></tr>',
+                         "{{MODELS}}": models or '<tr><td colspan=2>Nothing yet</td></tr>',
+                         "{{UNPRICED}}": (f"<p>{s['unpriced']} call(s) used a model with no known price and aren't "
+                                          "counted.</p>") if s["unpriced"] else "",
+                         "{{LOG}}": html_escape(str(ledger_path()))}.items():
+            page = page.replace(key, val)
         return page.encode()
 
     def settings_payload(self) -> dict:
@@ -437,8 +479,11 @@ class ReviewServer:
                 if server.hub and self.path.split("?")[0] in ("/", "/index.html"):
                     return self._send(200, server.index_html(), "text/html; charset=utf-8")
                 if server.hub and self.path.split("?")[0] == "/settings":
-                    html = resources.files("lister").joinpath("static/settings.html").read_bytes()
-                    return self._send(200, html, "text/html; charset=utf-8")
+                    html = resources.files("lister").joinpath("static/settings.html").read_text()
+                    return self._send(200, html.replace("{{NAV}}", nav_html("settings")).encode(),
+                                      "text/html; charset=utf-8")
+                if server.hub and self.path.split("?")[0] == "/costs":
+                    return self._send(200, server.costs_html(), "text/html; charset=utf-8")
                 if server.hub and self.path.split("?")[0] == "/api/settings":
                     return self._json(server.settings_payload())
                 if server.hub and self.path.startswith("/b/") and self.path.count("/") == 2:
@@ -450,7 +495,7 @@ class ReviewServer:
                     html = resources.files("lister").joinpath("static/review.html").read_bytes()
                     return self._send(200, html, "text/html; charset=utf-8")
                 if sub == "/api/state":
-                    return self._json({**batch.payload(), "hub": server.hub})
+                    return self._json({**batch.payload(), "hub": server.hub, "nav": nav_html("batches") if server.hub else ""})
                 if sub.startswith("/img/"):
                     name = unquote(sub[len("/img/"):])
                     if name in batch.images:  # only files from the manifest
