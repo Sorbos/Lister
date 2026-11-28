@@ -49,7 +49,7 @@ def _write(folder: Path, card: dict) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     clean = {k: v for k, v in card.items() if not k.startswith("_") and k != "errors"}
     tmp = folder / "card.tmp"
-    tmp.write_text(json.dumps(clean, indent=2))
+    tmp.write_text(json.dumps(clean, indent=2), encoding="utf-8")
     tmp.replace(folder / "card.json")
 
 
@@ -99,7 +99,7 @@ def load(root: Path, stage: str = "inventory", now: datetime | None = None) -> l
     if d.exists():
         for f in d.iterdir():
             try:
-                card = json.loads((f / "card.json").read_text())
+                card = json.loads((f / "card.json").read_text(encoding="utf-8"))
             except (FileNotFoundError, ValueError, NotADirectoryError):
                 continue
             card["_stage"], card["_folder"] = stage, f
@@ -118,7 +118,7 @@ def get(root: Path, card_id: str, stage: str | None = None) -> dict:
     for s in ([stage] if stage else STAGES):
         f = stage_dir(root, s) / _safe(card_id)
         if (f / "card.json").exists():
-            card = json.loads((f / "card.json").read_text())
+            card = json.loads((f / "card.json").read_text(encoding="utf-8"))
             card["_stage"], card["_folder"] = s, f
             return card
     raise InventoryError(f"No card {card_id}" + (f" in {stage}" if stage else ""))

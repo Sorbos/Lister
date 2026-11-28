@@ -26,7 +26,8 @@ def load_dotenv(path: str | Path = ".env") -> None:
     p = Path(path)
     if not p.is_file():
         return
-    for line in p.read_text().splitlines():
+    # utf-8-sig: Notepad may start the file with an invisible marker (BOM) that would hide the first key.
+    for line in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -81,7 +82,7 @@ class EbaySettings:
 
     def save(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.saved_path.write_text(json.dumps({k: getattr(self, k) for k in self.SAVED_KEYS}, indent=2))
+        self.saved_path.write_text(json.dumps({k: getattr(self, k) for k in self.SAVED_KEYS}, indent=2), encoding="utf-8")
 
     KEY_VARS = ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "EBAY_RUNAME")
 
@@ -114,7 +115,7 @@ class EbaySettings:
             raise SystemExit(f"EBAY_MARKETPLACE must be one of {', '.join(MARKETPLACES)}")
         s = cls(os.environ["EBAY_CLIENT_ID"], os.environ["EBAY_CLIENT_SECRET"], os.environ["EBAY_RUNAME"], env, mp)
         if s.saved_path.exists():
-            for k, v in json.loads(s.saved_path.read_text()).items():
+            for k, v in json.loads(s.saved_path.read_text(encoding="utf-8")).items():
                 if k in cls.SAVED_KEYS:
                     setattr(s, k, v)
         return s

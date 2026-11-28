@@ -129,7 +129,7 @@ class Watcher:
     def _problem(self, p: Path, why: str) -> None:
         dest = _unique(self.problems / p.name)
         shutil.move(str(p), dest)
-        dest.with_suffix(".txt").write_text(why + "\n")
+        dest.with_suffix(".txt").write_text(why + "\n", encoding="utf-8")
         self.seen.pop(p, None)
         self.cards.pop(p, None)
         self.progress(f"Problem with {p.name}: {why} (moved to {self.problems})")
@@ -167,7 +167,7 @@ class Watcher:
             waiting = sum(1 for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXT) \
                 if inbox.is_dir() else 0
             (self.root / "activity.json").write_text(json.dumps(
-                {"time": time.time(), "waiting": waiting, "now": now, "inbox": str(inbox)}))
+                {"time": time.time(), "waiting": waiting, "now": now, "inbox": str(inbox)}), encoding="utf-8")
         except OSError:
             pass
 
@@ -246,7 +246,7 @@ class Watcher:
     def _identify(self, folder: Path, note: str) -> None:
         try:
             kw = {"client": self.client} if self.client is not None else {}
-            total = len(json.loads((folder / "manifest.json").read_text())["cards"])
+            total = len(json.loads((folder / "manifest.json").read_text(encoding="utf-8"))["cards"])
             _status(folder, "reading", note, done=0, total=total)
             kw["on_card"] = lambda done, n: _status(folder, "reading", note, done=done, total=n)
             results = self.identify(folder, model=self.model, progress=lambda m: None, **kw)
@@ -301,7 +301,7 @@ def _run_now(fn, *args):
 def _status(folder: Path, stage: str, message: str = "", **extra) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     tmp = folder / "status.tmp"
-    tmp.write_text(json.dumps({"stage": stage, "message": message, **extra}))
+    tmp.write_text(json.dumps({"stage": stage, "message": message, **extra}), encoding="utf-8")
     tmp.replace(folder / "status.json")
 
 

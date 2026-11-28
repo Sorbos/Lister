@@ -134,7 +134,7 @@ def identify_batch(
     from .title import build_title
 
     folder = Path(folder)
-    manifest = json.loads((folder / "manifest.json").read_text())
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     client = client or anthropic.Anthropic()
     results = []
     total, unpriced = 0.0, 0
@@ -174,7 +174,7 @@ def identify_batch(
     if on_card:
         on_card(len(results), len(results))
     (folder / "cards.json").write_text(json.dumps(
-        {"model": model, "cost_usd": round(total, 4), "cards": results}, indent=2))
+        {"model": model, "cost_usd": round(total, 4), "cards": results}, indent=2), encoding="utf-8")
     n = len(results)
     line = f"Claude cost for this batch: {money(total)} ({money(total / n if n else 0)} per card)"
     if unpriced:

@@ -67,7 +67,7 @@ def _card_from_identified(c: dict) -> dict:
 def initial_state(folder: Path) -> dict:
     """Build review state from cards.json (identified) or manifest.json (images only)."""
     src = folder / "cards.json"
-    cards = json.loads(src.read_text())["cards"] if src.exists() else json.loads((folder / "manifest.json").read_text())["cards"]
+    cards = json.loads(src.read_text(encoding="utf-8"))["cards"] if src.exists() else json.loads((folder / "manifest.json").read_text(encoding="utf-8"))["cards"]
     out = []
     for c in cards:
         out.append({
@@ -177,7 +177,7 @@ class BatchState:
         self.folder = Path(folder).resolve()
         self.path = self.folder / "review.json"
         self.lock = threading.Lock()
-        state = json.loads(self.path.read_text()) if self.path.exists() else initial_state(self.folder)
+        state = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else initial_state(self.folder)
         for k in ("defaults", "schedule", "schedule_error"):  # from older versions
             state.pop(k, None)
         if not self.path.exists() and (self.folder / "cards.json").exists():
@@ -191,7 +191,7 @@ class BatchState:
         """What identifying this batch cost (from cards.json), if it was identified."""
         f = self.folder / "cards.json"
         try:
-            return json.loads(f.read_text()).get("cost_usd") if f.exists() else None
+            return json.loads(f.read_text(encoding="utf-8")).get("cost_usd") if f.exists() else None
         except (ValueError, OSError):
             return None
 
@@ -208,7 +208,7 @@ class BatchState:
         if self.state.get("cards_json_mtime") == mtime:
             return False
         try:
-            identified = {c["position"]: c for c in json.loads(f.read_text())["cards"]}
+            identified = {c["position"]: c for c in json.loads(f.read_text(encoding="utf-8"))["cards"]}
         except (ValueError, KeyError, OSError):
             return False  # half-written; try again next time
         for card in self.state["cards"]:
@@ -248,11 +248,11 @@ class BatchState:
         self.state["finished"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                   "to_inventory": approved, "skipped": skipped, "ids": sent}
         msg = f"{approved} card(s) in inventory" + (f", {skipped} skipped" if skipped else "")
-        (self.folder / "status.json").write_text(json.dumps({"stage": "done", "message": msg}))
+        (self.folder / "status.json").write_text(json.dumps({"stage": "done", "message": msg}), encoding="utf-8")
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.state, indent=2))
+        tmp.write_text(json.dumps(self.state, indent=2), encoding="utf-8")
         tmp.replace(self.path)
 
     def _rotate(self, req: dict) -> None:
@@ -297,7 +297,7 @@ def batch_status(folder: Path) -> dict:
     """Written by `lister watch`: {"stage": "reading"|"ready"|"error", "message": ...}. No file = ready."""
     f = folder / "status.json"
     try:
-        return json.loads(f.read_text()) if f.exists() else {"stage": "ready"}
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"stage": "ready"}
     except (ValueError, OSError):
         return {"stage": "ready"}
 
@@ -372,7 +372,7 @@ class ReviewServer:
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
         try:
-            manifest = json.loads((folder / "manifest.json").read_text())
+            manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
             return None
         allowed = {c[k] for c in manifest.get("cards", []) for k in ("front", "back") if c.get(k)}
@@ -383,7 +383,7 @@ class ReviewServer:
         import time
 
         try:
-            act = json.loads((self.folder / "activity.json").read_text())
+            act = json.loads((self.folder / "activity.json").read_text(encoding="utf-8"))
         except (FileNotFoundError, ValueError):
             act = None
         if act is None or time.time() - act.get("time", 0) > 15:
@@ -416,17 +416,17 @@ class ReviewServer:
                        key=lambda f: batch_status(f).get("queued_at", 0))
         for f in folders:
             st = batch_status(f)
-            n = len(json.loads((f / "manifest.json").read_text()).get("cards", []))
+            n = len(json.loads((f / "manifest.json").read_text(encoding="utf-8")).get("cards", []))
             approved = listed = 0
             if (f / "review.json").exists():
-                cards = json.loads((f / "review.json").read_text())["cards"]
+                cards = json.loads((f / "review.json").read_text(encoding="utf-8"))["cards"]
                 approved = sum(1 for c in cards if c.get("approved"))
             if (f / "ebay.json").exists():
-                envs = json.loads((f / "ebay.json").read_text()).get("environments", {})
+                envs = json.loads((f / "ebay.json").read_text(encoding="utf-8")).get("environments", {})
                 listed = sum(1 for e in envs.values() for c in e["cards"].values() if c.get("listing_id"))
             cost = None
             if (f / "cards.json").exists():
-                cost = json.loads((f / "cards.json").read_text()).get("cost_usd")
+                cost = json.loads((f / "cards.json").read_text(encoding="utf-8")).get("cost_usd")
             name = html_escape(f.name)
             note = html_escape(st.get("message") or "")
             thumb = f'<img src="b/{name}/img/card_01_front.jpg" alt="">'
@@ -461,7 +461,7 @@ class ReviewServer:
         pdir = self.folder / "problems"
         if pdir.exists():
             for note in sorted(pdir.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
-                problems.append(f"<li><b>{html_escape(note.stem)}</b>: {html_escape(note.read_text().strip())}</li>")
+                problems.append(f"<li><b>{html_escape(note.stem)}</b>: {html_escape(note.read_text(encoding="utf-8").strip())}</li>")
         live = (self.activity_html(folders)
                 + "<ul>" + ("\n".join(rows) or "<p>No batches yet. Scan into the scans folder.</p>") + "</ul>"
                 + (("<h2>Problems</h2><ul class=problems>" + "".join(problems) + "</ul>") if problems else ""))
@@ -469,7 +469,7 @@ class ReviewServer:
             return live.encode()
         from . import settings
 
-        page = resources.files("lister").joinpath("static/hub.html").read_text()
+        page = resources.files("lister").joinpath("static/hub.html").read_text(encoding="utf-8")
         page = page.replace("{{NAV}}", nav_html("batches"))
         page = page.replace("{{INBOX}}", html_escape(str(settings.inbox(self.folder))))
         page = page.replace("{{LIVE}}", live)
@@ -613,7 +613,7 @@ class ReviewServer:
                        for f, v in reversed(list(s["by_folder"].items())[-30:]))
         models = "".join(f"<tr><td>{html_escape(m)}</td><td>{money(v)}</td></tr>"
                          for m, v in sorted(s["by_model"].items(), key=lambda kv: -kv[1]))
-        page = resources.files("lister").joinpath("static/costs.html").read_text()
+        page = resources.files("lister").joinpath("static/costs.html").read_text(encoding="utf-8")
         for key, val in {"{{NAV}}": nav_html("costs"), "{{TILES}}": tiles_html,
                          "{{CARDS}}": str(s["cards"]), "{{ROWS}}": rows or '<tr><td colspan=2>Nothing yet</td></tr>',
                          "{{MODELS}}": models or '<tr><td colspan=2>Nothing yet</td></tr>',
@@ -710,12 +710,12 @@ class ReviewServer:
                     partial = "partial=1" in self.path
                     return self._send(200, server.index_html(partial), "text/html; charset=utf-8")
                 if server.hub and self.path.split("?")[0] == "/settings":
-                    html = resources.files("lister").joinpath("static/settings.html").read_text()
+                    html = resources.files("lister").joinpath("static/settings.html").read_text(encoding="utf-8")
                     return self._send(200, html.replace("{{NAV}}", nav_html("settings")).encode(),
                                       "text/html; charset=utf-8")
                 path_only = self.path.split("?")[0]
                 if server.hub and path_only in ("/inventory", "/listed"):
-                    html = resources.files("lister").joinpath("static/inventory.html").read_text()
+                    html = resources.files("lister").joinpath("static/inventory.html").read_text(encoding="utf-8")
                     html = html.replace("{{NAV}}", nav_html(path_only[1:])).replace("{{STAGE}}", path_only[1:])
                     return self._send(200, html.encode(), "text/html; charset=utf-8")
                 if server.hub and path_only == "/api/inventory":

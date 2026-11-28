@@ -90,7 +90,7 @@ class EbayClient:
         path: Path = self.s.tokens_path
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # only you can read it
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(tokens, f)
         self._tokens = tokens
 
@@ -98,7 +98,7 @@ class EbayClient:
         if self._tokens is None:
             if not self.s.tokens_path.exists():
                 raise NotSignedIn("Not signed in to eBay. Run: lister ebay login")
-            self._tokens = json.loads(self.s.tokens_path.read_text())
+            self._tokens = json.loads(self.s.tokens_path.read_text(encoding="utf-8"))
         return self._tokens
 
     def access_token(self) -> str:

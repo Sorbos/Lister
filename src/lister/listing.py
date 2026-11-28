@@ -368,7 +368,7 @@ def list_cards(root: str | Path, ids: list[str], settings: EbaySettings, client=
             tick()
 
     if dry_run:
-        (root / "ebay_preview.json").write_text(json.dumps(previews, indent=2))
+        (root / "ebay_preview.json").write_text(json.dumps(previews, indent=2), encoding="utf-8")
         progress(f"Preview only: nothing was sent to eBay. Details in {root / 'ebay_preview.json'}")
         return previews
     return cards

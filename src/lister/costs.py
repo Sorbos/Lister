@@ -54,7 +54,7 @@ def record(model: str, usd: float | None, folder: str, position: int, when: date
     p = ledger_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     when = when or datetime.now(timezone.utc)
-    with p.open("a") as f:
+    with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"time": when.isoformat(), "model": model, "usd": usd,
                             "folder": folder, "position": position}) + "\n")
 
@@ -66,7 +66,7 @@ def summary(now: datetime | None = None) -> dict:
     p = ledger_path()
     if not p.exists():
         return out
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         try:
             row = json.loads(line)
         except json.JSONDecodeError:

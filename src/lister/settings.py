@@ -27,7 +27,7 @@ def path(root: Path) -> Path:
 
 def load(root: Path) -> dict:
     try:
-        data = json.loads(path(root).read_text())
+        data = json.loads(path(root).read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         data = {}
     return {**DEFAULTS, **{k: v for k, v in data.items() if k in DEFAULTS}}
@@ -37,7 +37,7 @@ def save(root: Path, values: dict) -> dict:
     data = {**load(root), **{k: v for k, v in values.items() if k in DEFAULTS}}
     p = path(root)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(p)
     return data
 

@@ -170,15 +170,26 @@ def pair_backs(fronts: list[Card], backs: list[Card], layout: str = "same") -> l
     return pairs
 
 
+# OpenCV's imread/imwrite can't open Windows paths with non-English letters (e.g. C:\\Users\\Dániel),
+# so files are read and written by Python and only decoded/encoded by OpenCV.
 def load(path: str | Path) -> np.ndarray:
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    try:
+        data = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        raise FileNotFoundError(path) from None
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
     if img is None:
-        raise FileNotFoundError(path)
+        raise FileNotFoundError(f"{path} (missing, empty or not an image)")
     return img
 
 
 def save(img: np.ndarray, path: str | Path, quality: int = 95) -> None:
-    cv2.imwrite(str(path), img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    ext = Path(path).suffix.lower() or ".jpg"
+    params = [cv2.IMWRITE_JPEG_QUALITY, quality] if ext in (".jpg", ".jpeg") else []
+    ok, buf = cv2.imencode(ext, img, params)
+    if not ok:
+        raise OSError(f"Couldn't encode image for {path}")
+    buf.tofile(str(path))
 
 
 def write_batch(fronts: list[Card], backs: list[Card] | None, out: str | Path, source: dict,
@@ -198,7 +209,7 @@ def write_batch(fronts: list[Card], backs: list[Card] | None, out: str | Path, s
             save(b.image, out / f"{stem}_back.jpg")
             entry["back"] = f"{stem}_back.jpg"
         manifest.append(entry)
-    (out / "manifest.json").write_text(json.dumps({"source": source, "cards": manifest}, indent=2))
+    (out / "manifest.json").write_text(json.dumps({"source": source, "cards": manifest}, indent=2), encoding="utf-8")
     return manifest
 
 
