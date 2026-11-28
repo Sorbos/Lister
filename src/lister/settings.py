@@ -2,6 +2,7 @@
 
 - inbox: the folder Lister watches for scans (default ROOT/inbox)
 - wait_minutes: how long a lone scan waits for its back scan
+- listing_defaults: format/prices/length new inventory cards start with (None = auction, $0.99, 7 days)
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import os
 import re
 from pathlib import Path
 
-DEFAULTS = {"inbox": None, "wait_minutes": 10}
+DEFAULTS = {"inbox": None, "wait_minutes": 10, "listing_defaults": None}
 BUSY_FOLDER = 20  # this many images already in a folder → ask before watching it
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 

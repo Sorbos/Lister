@@ -12,8 +12,9 @@ import pytest
 from lister.cli import main
 from lister.config import EbaySettings
 from lister.ebay_api import EbayClient, EbayError, NotSignedIn
-from lister.listing import ListingError, build_aspects, build_offer, condition_fields, list_batch
-from lister.review import initial_state, normalise
+from lister import inventory
+from lister.listing import ListingError, build_aspects, build_offer, condition_fields, list_cards, sku_for
+from lister.review import BatchState
 
 SAMPLES = Path(__file__).parent.parent / "samples"
 NOW = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)
@@ -207,33 +208,45 @@ def test_offer_auction_fixed_and_schedule(settings):
     assert o["pricingSummary"] == {"price": {"value": "12.50", "currency": "USD"}}
 
 
-# ------------------------------------------------------------------ full runs
+# ------------------------------------------------------------------ full runs (from the inventory)
 @pytest.fixture
-def batch(tmp_path):
-    folder = tmp_path / "batch"
-    main(["split", str(SAMPLES / "fronts_01.jpg"), str(SAMPLES / "backs_01.jpg"), "-o", str(folder)])
-    state = initial_state(folder)
-    for c in state["cards"][:3]:
-        c["info"].update(info(card_number=str(c["position"]), subject=f"Player {c['position']}"))
-        c["approved"] = True
-    state["cards"][1]["listing"]["start_time"] = (NOW + timedelta(hours=2)).isoformat()
-    state["cards"][2]["listing"].update(format="fixed_price", price=8)
-    state = normalise(state)
-    for c in state["cards"][:3]:
-        c["approved"] = True  # normalise() validates against the real clock; approval is what matters here
-    (folder / "review.json").write_text(json.dumps(state))
-    return folder
+def root(tmp_path):
+    """A Lister folder whose inventory holds 3 cards from a finished batch: card 2 scheduled, card 3 fixed price."""
+    root = tmp_path / "Lister"
+    folder = root / "batches" / "2026-11-14_IMG_0045"
+    main(["split", str(SAMPLES / "fronts_01.jpg"), str(SAMPLES / "backs_01.jpg"), "-o", str(folder), "-n", "0"])
+    b = BatchState(folder)
+    cards = []
+    for c in b.state["cards"]:
+        c = dict(c)
+        c["info"] = {**c["info"], **info(card_number=str(c["position"]), subject=f"Player {c['position']}")}
+        c["approved"], c["skip"] = c["position"] <= 3, c["position"] > 3
+        cards.append(c)
+    b.update({"cards": cards})
+    assert b.state["finished"]["to_inventory"] == 3
+    ids = [c["id"] for c in inventory.load(root)]
+    inventory.update(root, [{"id": ids[1], "listing": {"start_time": (NOW + timedelta(hours=2)).isoformat()}},
+                            {"id": ids[2], "listing": {"format": "fixed_price", "price": 8}}])
+    return root
 
 
-def run(folder, settings, client, **kw):
-    return list_batch(folder, settings, client, clock=lambda: NOW.timestamp(), progress=lambda *_: None, **kw)
+def ids_of(root, stage="inventory"):
+    return [c["id"] for c in inventory.load(root, stage)]
 
 
-def test_list_batch_ebay_scheduling(batch, settings, client):
+def run(root, settings, client, ids=None, **kw):
+    return list_cards(root, ids if ids is not None else ids_of(root), settings, client,
+                      clock=lambda: NOW.timestamp(), progress=lambda *_: None, **kw)
+
+
+def test_list_cards_ebay_scheduling(root, settings, client):
     fake = client.http
-    env = run(batch, settings, client)
-    assert sorted(env["cards"]) == ["1", "2", "3"]
-    assert all(r["listing_id"].startswith("11000") for r in env["cards"].values())
+    ids = ids_of(root)
+    run(root, settings, client, ids)
+    assert ids_of(root) == [] and ids_of(root, "listed") == ids  # all moved to listed/
+    listed = inventory.load(root, "listed")
+    assert all(c["ebay"]["listing_id"].startswith("11000") for c in listed)
+    assert listed[0]["ebay"]["ends_at"].startswith("2026-11-21")  # 7 days after "now"
     assert fake.images == 6  # front + back for 3 cards
     offers = sorted(fake.offers.values(), key=lambda o: o["sku"])
     assert "listingStartDate" not in offers[0]
@@ -243,82 +256,91 @@ def test_list_batch_ebay_scheduling(batch, settings, client):
     assert item["product"]["imageUrls"][0].startswith("https://i.ebayimg.com/")
     assert item["product"]["aspects"]["Type"] == ["Sports Trading Card"]
     assert item["conditionDescriptors"] == [{"name": "40001", "values": ["400011"]}]
-    # Category details fetched once, not per card.
-    assert len([p for p in fake.paths("GET") if "get_item_condition_policies" in p]) == 1
-
-    # Running again lists nothing twice.
-    before = len(fake.calls)
-    run(batch, settings, client)
-    assert not [p for p in fake.paths()[before:] if p.endswith("/publish") or "inventory_item" in p]
+    assert len([p for p in fake.paths("GET") if "get_item_condition_policies" in p]) == 1  # fetched once
+    # Cards that are already listed can't be listed again.
+    with pytest.raises(inventory.InventoryError):
+        run(root, settings, client, ids)
 
 
-def test_list_batch_resumes_after_failure(batch, settings, client):
+def test_list_cards_resumes_after_failure(root, settings, client):
     client.http.fail_publish = {"OF2"}
+    ids = ids_of(root)
     with pytest.raises(EbayError, match="Something is wrong"):
-        run(batch, settings, client)
-    hist = json.loads((batch / "ebay.json").read_text())["environments"]["sandbox"]["cards"]
-    assert hist["1"]["listing_id"] and "listing_id" not in hist["2"] and hist["2"]["offer_id"] == "OF2"
+        run(root, settings, client, ids)
+    assert ids_of(root, "listed") == ids[:1]
+    stuck = inventory.get(root, ids[1])
+    assert stuck["_stage"] == "inventory" and stuck["ebay"]["offer_id"] == "OF2"
     client.http.fail_publish = set()
     uploads = client.http.images
-    env = run(batch, settings, client)
-    assert all(r.get("listing_id") for r in env["cards"].values())
+    run(root, settings, client)
+    assert ids_of(root, "listed") == ids
     assert client.http.images == uploads + 2  # only card 3's photos; card 2's were already uploaded
-    assert len(client.http.offers) == 3  # card 2's offer was updated, not duplicated
+    assert len(client.http.offers) == 3  # card 2's offer was reused, not duplicated
 
 
-def test_list_batch_local_scheduling(batch, settings, client):
+def test_unsold_card_relists_with_new_sku(root, settings, client):
+    ids = ids_of(root)
+    run(root, settings, client, ids[:1])
+    first_sku = inventory.get(root, ids[0])["ebay"]["sku"]
+    inventory.back_to_inventory(root, ids[:1])
+    card = inventory.get(root, ids[0])
+    assert card["_stage"] == "inventory" and card["ebay"] is None and card["listings"][0]["outcome"] == "unsold"
+    assert sku_for(card) != first_sku and sku_for(card).endswith("-2")
+    run(root, settings, client, ids[:1])
+    relisted = inventory.get(root, ids[0])
+    assert relisted["_stage"] == "listed" and relisted["ebay"]["sku"].endswith("-2")
+    inventory.mark_sold(root, ids[:1])
+    sold = inventory.get(root, ids[0])
+    assert sold["_stage"] == "sold" and sold["ebay"]["outcome"] == "sold"
+
+
+def test_list_cards_local_scheduling(root, settings, client):
     settings.schedule_mode = "local"
     slept = []
-    run(batch, settings, client, sleep=slept.append)
+    ids = ids_of(root)
+    run(root, settings, client, ids, sleep=slept.append)
     assert slept == [7200.0]
     assert all("listingStartDate" not in o for o in client.http.offers.values())
     publishes = [p for p in client.http.paths("POST") if p.endswith("/publish")]
     assert publishes[-1] == "/sell/inventory/v1/offer/OF2/publish"  # the scheduled card went last
 
 
-def test_dry_run_offline(batch, settings):
-    run(batch, settings, None, dry_run=True)
-    preview = json.loads((batch / "ebay_preview.json").read_text())
-    assert [p["position"] for p in preview] == [1, 2, 3]
-    assert preview[0]["offer"]["format"] == "AUCTION"
-    assert not (batch / "ebay.json").exists() or "listing_id" not in (batch / "ebay.json").read_text()
+def test_preview_offline(root, settings):
+    run(root, settings, None, dry_run=True)
+    preview = json.loads((root / "ebay_preview.json").read_text())
+    assert len(preview) == 3 and preview[0]["offer"]["format"] == "AUCTION"
+    assert len(ids_of(root)) == 3 and not ids_of(root, "listed")  # nothing moved
 
 
-def test_refuses_without_setup_or_with_past_start(batch, settings, client):
+def test_refuses_without_setup_or_with_past_start(root, settings, client):
     settings.location_key = None
     with pytest.raises(ListingError, match="lister ebay setup"):
-        run(batch, settings, client)
+        run(root, settings, client)
     settings.location_key = "home"
-    state = json.loads((batch / "review.json").read_text())
-    state["cards"][1]["listing"]["start_time"] = (NOW - timedelta(minutes=1)).isoformat()
-    (batch / "review.json").write_text(json.dumps(state))
-    with pytest.raises(ListingError, match="card 2: Start time is in the past"):
-        run(batch, settings, client)
+    ids = ids_of(root)
+    inventory.update(root, [{"id": ids[1], "listing": {"start_time": (NOW - timedelta(minutes=1)).isoformat()}}])
+    with pytest.raises(ListingError, match="Start time is in the past"):
+        run(root, settings, client)
     assert not client.http.items
 
 
-def test_nothing_approved(tmp_path, settings):
-    main(["split", str(SAMPLES / "fronts_01.jpg"), "-o", str(tmp_path)])
-    (tmp_path / "review.json").write_text(json.dumps(initial_state(tmp_path)))
-    with pytest.raises(ListingError, match="No approved"):
-        run(tmp_path, settings, None, dry_run=True)
+def test_nothing_selected(root, settings):
+    with pytest.raises(ListingError, match="No cards"):
+        run(root, settings, None, ids=[], dry_run=True)
 
 
-def test_dry_run_without_ebay_keys(batch, monkeypatch, capsys):
+def test_dry_run_without_ebay_keys(root, monkeypatch, capsys):
     """Showcase before having eBay developer keys: preview works, nothing asks to list for real."""
     for k in ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "EBAY_RUNAME"):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.chdir(batch)  # no .env here
+    monkeypatch.chdir(root)  # no .env here
     monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("must not ask for confirmation"))
-    state = json.loads((batch / "review.json").read_text())
-    for c in state["cards"]:  # this test runs on the real clock; the fixture's start time is fixed in the past
-        c["listing"]["start_time"] = None
-    (batch / "review.json").write_text(json.dumps(state))
-    assert main(["list", str(batch), "--dry-run"]) == 0
+    for c in inventory.load(root):  # this test runs on the real clock; the fixture's start time is in the past
+        inventory.clear_start_times(root, [c["id"]])
+    assert main(["list", "--root", str(root), "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "previewing offline" in out and "[dry run]" in out
-    preview = json.loads((batch / "ebay_preview.json").read_text())
+    assert "previewing offline" in out and "[preview]" in out
+    preview = json.loads((root / "ebay_preview.json").read_text())
     assert preview[0]["offer"]["listingPolicies"]["fulfillmentPolicyId"] == "(your shipping policy)"
-    # Without --dry-run, missing keys is still a clear error.
     with pytest.raises(SystemExit, match="Missing EBAY_CLIENT_ID"):
-        main(["list", str(batch)])
+        main(["list", "--root", str(root)])

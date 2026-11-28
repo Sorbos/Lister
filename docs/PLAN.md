@@ -93,6 +93,16 @@ Keys go in a local `.env` file that is never committed.
 - Fronts-only batches when the check fails or no back arrives within 10 minutes.
 - Review page lists all batches (`/`), each batch at `/b/<name>/`.
 
+## Inventory ✅
+`src/lister/inventory.py`, Inventory and Listed pages.
+- Batches are for checking details only; when every card is approved/skipped, approved cards are
+  copied to `ROOT/inventory/<card id>/` (photos + card.json) and the batch becomes read-only.
+- Inventory: bulk listing settings, staggered start times across any selection (across batches),
+  per-card edits, preview, list on eBay (background job with progress).
+- `ROOT/listed/` → *Sold* (`ROOT/sold/`) or *Didn't sell* (back to inventory; new SKU per attempt,
+  history kept in the card).
+- Later, once eBay is connected: detect sold/unsold automatically.
+
 ## Phase 5: nice-to-haves
 - Price hints from recently sold listings.
 - CSV export (eBay bulk upload) as a fallback.

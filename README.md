@@ -20,12 +20,9 @@ into eBay listings. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
    browser page opens listing your batches.
 5. Point your scanner software at `C:\Lister\inbox` (or copy scans in). Scan 9 fronts, flip,
    scan the backs. Within a minute or so the batch appears; open it to review and approve.
-6. To see exactly what would be sent to eBay, in Command Prompt:
-   ```
-   cd C:\Lister
-   py -m lister list "C:\Lister\batches\<batch name>" --dry-run
-   ```
-   It writes `ebay_preview.json` in the batch folder. Nothing is sent anywhere.
+6. When every card in a batch is approved or skipped, the approved cards move to the
+   **Inventory** page. Select cards, set prices and staggered start times, and click **Preview**
+   to see exactly what would be sent to eBay. Nothing is sent anywhere until eBay is connected.
 7. `py -m lister usage` shows what Claude has cost so far.
 
 To update later, run the same `pip install` line again with `--upgrade`.
@@ -70,7 +67,8 @@ many scans are waiting, what Lister is doing right now (matching or cutting out 
 Claude has got; each batch being read has a progress bar ("Reading card 6 of 9"), and batches
 waiting their turn show their place in line. If Lister isn't running, the panel says so.
 
-**Pages:** a bar at the top links **Batches** (every batch; click one to review it), **Settings**
+**Pages:** a bar at the top links **Batches** (every batch; click one to review it), **Inventory**
+(price, schedule and list cards), **Listed** (live on eBay; mark sold or send back), **Settings**
 (scans folder, wait time) and **Costs** (what Claude has cost: last 7 days, this month, all time,
 per batch). It's there whenever Lister runs with `lister watch` or `lister batches`.
 
@@ -141,28 +139,30 @@ Claude cost (estimated from list prices; your Anthropic Console has the exact bi
 Every call is logged in `~/.config/lister/usage.jsonl`. These are estimates from Anthropic's list
 prices; the Usage and Cost pages in the Anthropic Console show the exact bill.
 
-## Review and approve
+## Review, then the inventory
 
-```bash
-lister review out/batch-001
-```
+**Batches: check the details.** Open a batch (from the Batches page, or `lister review FOLDER` for
+a single folder). Each card shows its front and back; fix any field (fields Claude was unsure of
+are highlighted ⚠; the title rebuilds as you type), then **Approve** it or tick **Don't list**.
+When every card is done, the approved cards are copied into the inventory and the batch becomes
+read-only. Edits are saved as you go, so you can stop and come back.
 
-Opens a page in your browser (served only on your own computer) showing all 9 cards with their
-front and back. For each card you can:
-- fix any field; fields Claude was unsure of are highlighted ⚠, and the title rebuilds as you type
-  (or type your own title; "Auto title" switches back)
-- choose **Auction** (start price, 1–10 days, optional Buy It Now and reserve) or **Fixed price**
-- mark it "Don't list", or **Approve** it
-- set a **start time** (empty = goes live as soon as it's listed); the page shows when each auction ends
+**Inventory: price, schedule, list.** Every approved card from every batch, in one place
+(`C:\Lister\inventory\<card>\` holds its photos and `card.json`).
+- Tick cards (or *Select all*), then under **Set many cards at once** choose **Auction** (start
+  price, 1–10 days, optional Buy It Now and reserve) or **Fixed price**, and *Apply to selected*.
+- **Staggered endings:** pick when the first card starts and the gap (e.g. 3 minutes), then
+  *Stagger selected*. It runs across all selected cards in the order shown, across batches, so
+  18 seven-day auctions starting Sun 7:00 PM end 7:00, 7:03, … 7:51 PM a week later.
+- Change any single card's title, prices, length or start time on its row.
+- Problems show under each card and block listing (no price, title over 80 characters, Buy It
+  Now less than 30% above the start, a start time in the past or more than 3 weeks ahead).
+- **Preview** shows exactly what would be sent to eBay; **List on eBay** lists the selected
+  cards (with a confirmation), showing progress as it goes.
 
-**Staggered endings:** under "Stagger start times", pick when the first card starts and the gap
-(e.g. every 3 minutes), then "Apply". Cards are scheduled in scanner order, so 9 seven-day auctions
-starting Mon 7:00 PM end Mon 7:00, 7:03, … 7:24 PM a week later. eBay allows scheduling up to 3 weeks ahead.
-
-Set batch defaults at the top (e.g. 7-day auctions from $0.99) and apply them to every card.
-Problems are listed under each card and block approval (empty title, over 80 characters, no price,
-Buy It Now less than 30% above the start price). Everything is saved to `review.json` as you go,
-so you can stop and come back. It also works without `lister identify`; you just fill in fields yourself.
+**Listed:** cards live or scheduled on eBay, with the eBay item number and end time. Mark
+**Sold** (moves to `C:\Lister\sold`) or **Didn't sell → back to inventory** to re-price and
+list again (it gets a fresh eBay listing; the old one is kept in the card's history).
 
 ## List on eBay
 
@@ -193,23 +193,27 @@ so you can stop and come back. It also works without `lister identify`; you just
    You stay signed in for about 18 months. Sign-in tokens are stored in `~/.config/lister/`,
    readable only by you.
 
-### Listing a batch
+### Listing
+Use the **Inventory** page (above), or from the command line:
 ```bash
-lister list out/batch-001 --dry-run   # shows exactly what would be sent, sends nothing
-lister list out/batch-001             # lists every approved card (asks you to confirm)
+lister list --dry-run          # preview every inventory card; sends nothing
+lister list                    # list every inventory card (asks you to confirm)
+lister list --ids <card id>…   # just some cards (their folder names in C:\Lister\inventory)
 ```
-For each approved card Lister uploads the front and back scans to eBay, creates the listing with
-the condition (ungraded card condition, or grader + grade), item specifics (player, team, set,
-season, card #, rookie…), a description, and your auction or fixed-price settings, then publishes it.
+For each card Lister uploads the front and back scans to eBay, creates the listing with the
+condition (ungraded card condition, or grader + grade), item specifics (player, team, set,
+season, card #, rookie…), a description, and your auction or fixed-price settings, publishes it,
+and moves the card to `listed`.
 
-- **Scheduled start times** (from the review page) work two ways, chosen in `lister ebay setup`:
+- **Scheduled start times** work two ways, chosen in `lister ebay setup`:
   *eBay starts them* (computer can be off; eBay may charge a small scheduling fee) or
-  *Lister starts them* (free; leave `lister list` running until the last card is live).
-- **Safe to re-run:** progress is saved in `ebay.json` in the batch folder. If something fails
-  part-way, fix it and run the same command again; cards already listed are skipped, never duplicated.
+  *Lister starts them* (free; keep Lister running until the last card is live).
+- **Safe to re-run:** progress is saved in each card's `card.json`. If something fails part-way,
+  fix it and list again; cards already listed have moved to `listed`, and a half-done card picks
+  up where it stopped, never creating a duplicate listing.
 - Card details eBay needs (condition codes, allowed item specific values) are looked up from eBay
   for each category, so they stay current. If eBay requires an item specific Lister doesn't know,
-  `lister list` tells you its name; add it to `extra_aspects` in `~/.config/lister/<env>/setup.json`.
+  the listing log tells you its name; add it to `extra_aspects` in `~/.config/lister/<env>/setup.json`.
 
 ### Going live
 In the developer portal, open your **Production** keyset, respond to the "Marketplace account

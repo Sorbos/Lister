@@ -73,17 +73,6 @@ def test_custom_title_kept(server):
     assert post(server, {"cards": [card]})["cards"][0]["title"] == "My own title"
 
 
-def test_validation_blocks_approval(server):
-    card = json.loads(get(server, "/api/state")[1])["cards"][0]
-    card["listing"].update(format="auction", start_price=10, buy_it_now=11)
-    card["approved"] = True
-    out = post(server, {"cards": [card]})["cards"][0]
-    assert any("30%" in e for e in out["errors"])
-    assert out["approved"] is False
-    card["listing"].update(format="fixed_price", price=None)
-    assert "Set a price" in post(server, {"cards": [card]})["cards"][0]["errors"]
-
-
 def test_cannot_change_image_paths_or_read_other_files(server):
     card = json.loads(get(server, "/api/state")[1])["cards"][0]
     card["front"] = "../../etc/passwd"
@@ -99,29 +88,6 @@ def test_other_websites_cannot_post(server):
     with pytest.raises(urllib.error.HTTPError) as e:
         post(server, {"cards": []}, origin="https://evil.example")
     assert e.value.code == 403
-
-
-def test_stagger_assigns_times_in_scanner_order(server):
-    from datetime import datetime, timedelta, timezone
-
-    first = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0, second=0)
-    state = json.loads(get(server, "/api/state")[1])
-    state["cards"][2]["skip"] = True
-    out = post(server, {"cards": [state["cards"][2]], "schedule": {"first_start": first.isoformat(), "interval_minutes": 5},
-                        "apply_schedule": True})
-    times = [c["listing"]["start_time"] for c in out["cards"]]
-    assert times[2] is None  # skipped card left alone
-    others = [datetime.fromisoformat(t.replace("Z", "+00:00")) for i, t in enumerate(times) if i != 2]
-    assert others[0] == first
-    assert [b - a for a, b in zip(others, others[1:])] == [timedelta(minutes=5)] * 7
-    assert out["cards"][0]["errors"] == []
-    # Persisted
-    assert json.loads((server.folder / "review.json").read_text())["cards"][1]["listing"]["start_time"] == times[1]
-
-
-def test_schedule_needs_first_start(server):
-    out = post(server, {"schedule": {"first_start": None}, "apply_schedule": True})
-    assert "first card" in out["schedule_error"]
 
 
 def test_start_time_limits():
@@ -174,3 +140,25 @@ def test_claude_results_fill_in_after_page_was_opened(tmp_path):
     # And a fresh start (e.g. restarting lister review) sees the same.
     again = BatchState(tmp_path).state
     assert again["cards"][0]["title"].startswith("1978") and again["cards"][1]["info"]["subject"] == "My own words"
+
+
+def test_batch_approval_checks_details_only(server):
+    card = json.loads(get(server, "/api/state")[1])["cards"][0]
+    assert "listing" not in card  # prices and schedules are set in the inventory now
+    card["info"]["subject"] = ""
+    card["approved"] = True
+    out = post(server, {"cards": [card]})["cards"][0]
+    assert "Player/subject is empty" in out["errors"] and out["approved"] is False
+
+
+def test_finished_batch_is_read_only(server):
+    cards = json.loads(get(server, "/api/state")[1])["cards"]
+    for c in cards:
+        c["info"]["subject"] = c["info"]["subject"] or f"P{c['position']}"
+        c["approved"] = c["position"] != 9
+        c["skip"] = c["position"] == 9
+    out = post(server, {"cards": cards})
+    assert out["finished"]["to_inventory"] == 8 and out["finished"]["skipped"] == 1
+    cards[0]["info"]["subject"] = "Changed later"
+    assert post(server, {"cards": [cards[0]]})["cards"][0]["info"]["subject"] != "Changed later"
+

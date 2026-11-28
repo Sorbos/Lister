@@ -20,7 +20,9 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; }
-.batch { background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 16px; }
+.banner { max-width: 1200px; margin: 12px auto 0; padding: 0 16px; }
+.banner > div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
+.banner > div.done { background: var(--ok-bg); color: var(--ok); border-color: transparent; font-weight: 600; }
 .batch > summary { cursor: pointer; padding: 10px 0; font-weight: 600; font-size: 14px; }
 .batch > summary small { color: var(--muted); font-weight: 400; }
 .batch[open] { padding-bottom: 12px; }
@@ -83,11 +85,7 @@ dialog::backdrop { background: rgb(0 0 0 / .75); }
     </div>
   </div>
 </header>
-<details class="batch" id="batch">
-  <summary>Batch settings <small>defaults &amp; staggered start times</small></summary>
-  <div class="defaults" id="defaults"></div>
-  <div class="defaults" id="schedule"></div>
-</details>
+<div class="banner" id="banner"></div>
 <main id="cards"></main>
 <dialog id="zoom"><img alt=""></dialog>
 
@@ -103,7 +101,6 @@ const TEXT_FIELDS = [
   ["serial_number", "Serial # (e.g. 23/99)"],
 ];
 const CHECKS = [["rookie", "Rookie (RC)"], ["autograph", "Autograph"], ["memorabilia", "Patch / relic"], ["graded", "Graded"]];
-const DAYS = [1, 3, 5, 7, 10];
 let state = null, maxLen = 80, timer = null, inflight = Promise.resolve();
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -118,30 +115,15 @@ const h = (tag, attrs = {}, ...kids) => {
   return el;
 };
 
-// Times: the server stores UTC ("…Z"); inputs show your computer's local time.
-const pad = n => String(n).padStart(2, "0");
-const toLocalInput = iso => {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
-const fromLocalInput = v => v ? new Date(v).toISOString() : null;
-const fmtTime = d => d.toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-function endsText(l) {
-  if (l.format !== "auction") return l.start_time ? "Goes live " + fmtTime(new Date(l.start_time)) : "Goes live as soon as it's listed";
-  if (!l.start_time) return `Ends ${l.duration_days} days after it's listed`;
-  return "Ends " + fmtTime(new Date(new Date(l.start_time).getTime() + l.duration_days * 864e5));
-}
-
 function save(delay = 400, extra = {}) {
   clearTimeout(timer);
   $("#summary").textContent = "Saving…";
   timer = setTimeout(() => {
-    const body = JSON.stringify({ defaults: state.defaults, schedule: state.schedule, cards: state.cards, ...extra });
+    const body = JSON.stringify({ cards: state.cards, ...extra });
     inflight = inflight.then(() =>
       fetch("api/state", { method: "POST", headers: { "Content-Type": "application/json" }, body })
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
-        .then(s => { merge(s); refresh(); renderScheduleError(s.schedule_error); })
+        .then(s => { merge(s); refresh(); if (s.finished && !state.finished) { state.finished = s.finished; showFinished(); } })
         .catch(e => { $("#summary").textContent = "Could not save (" + e + ") – is lister review still running?"; }));
   }, delay);
 }
@@ -152,70 +134,8 @@ function merge(s) {
     const c = state.cards[i];
     c.errors = sc.errors; c.approved = sc.approved;
     if (!c.title_custom) c.title = sc.title;
-    c.listing.start_time = sc.listing.start_time;
   });
 }
-
-function listingFields(obj, onChange, compact) {
-  const wrap = h("div", { class: "grid" });
-  const field = (key, label, input) => wrap.append(h("label", { "data-k": key }, label, input));
-  const num = (key, label, ph) => field(key, label, h("input", {
-    type: "number", min: "0", step: "0.01", value: obj[key] ?? "", placeholder: ph || "",
-    oninput: e => { obj[key] = e.target.value === "" ? null : Number(e.target.value); onChange(); },
-  }));
-  field("format", "Format", h("select", { onchange: e => { obj.format = e.target.value; onChange(true); } },
-    h("option", { value: "auction", selected: obj.format === "auction" }, "Auction"),
-    h("option", { value: "fixed_price", selected: obj.format === "fixed_price" }, "Fixed price (Buy It Now)")));
-  const auction = obj.format === "auction";
-  if (auction) {
-    num("start_price", "Starting price $");
-    field("duration_days", "Length", h("select", { onchange: e => { obj.duration_days = Number(e.target.value); onChange(); } },
-      DAYS.map(d => h("option", { value: d, selected: obj.duration_days === d }, d + (d === 1 ? " day" : " days")))));
-    num("buy_it_now", "Buy It Now $", "optional");
-    if (!compact) num("reserve", "Reserve $", "optional");
-  } else {
-    num("price", "Price $");
-  }
-  if (!compact) {
-    field("start_time", "Starts (empty = right away)", h("input", { type: "datetime-local", "data-role": "start",
-      value: toLocalInput(obj.start_time), oninput: e => { obj.start_time = fromLocalInput(e.target.value); onChange(); } }));
-    wrap.append(h("div", { class: "ends", "data-role": "ends" }));
-  }
-  return wrap;
-}
-
-function renderDefaults() {
-  const box = $("#defaults");
-  box.replaceChildren(
-    h("strong", { style: "align-self:center;font-size:13px" }, "Batch defaults:"),
-    listingFields(state.defaults, rerender => { if (rerender) renderDefaults(); save(); }, true),
-    h("button", { onclick: () => {
-      const { start_time, ...defaults } = state.defaults;  // keep each card's own start time
-      state.cards.forEach(c => { if (!c.skip && !c.approved) Object.assign(c.listing, structuredClone(defaults)); });
-      renderCards(); save(0);
-    } }, "Apply to all unapproved cards"));
-  $(".grid", box).style.cssText = "display:flex;gap:8px;margin:0;flex-wrap:wrap";
-}
-
-function renderSchedule() {
-  const sc = state.schedule;
-  const first = h("input", { type: "datetime-local", value: toLocalInput(sc.first_start), style: "width:auto",
-    oninput: e => { sc.first_start = fromLocalInput(e.target.value); save(); } });
-  const gap = h("input", { type: "number", min: "0", step: "1", value: sc.interval_minutes ?? 5, style: "width:80px",
-    oninput: e => { sc.interval_minutes = Number(e.target.value); save(); } });
-  $("#schedule").replaceChildren(
-    h("strong", { style: "align-self:center;font-size:13px" }, "Stagger start times:"),
-    h("label", {}, "First card starts", first),
-    h("label", {}, "Then every (minutes)", gap),
-    h("button", { title: "Cards are scheduled in scanner order; skipped and approved cards are left alone",
-      onclick: () => save(0, { apply_schedule: true }) }, "Apply start times"),
-    h("button", { onclick: () => {
-      state.cards.forEach(c => { if (!c.skip && !c.approved) c.listing.start_time = null; });
-      save(0);
-    } }, "Start all right away"),
-    h("span", { class: "sched-err", id: "schedErr" }));
-}
-function renderScheduleError(msg) { const el = $("#schedErr"); if (el) el.textContent = msg || ""; }
 
 function renderCards() {
   $("#cards").replaceChildren(...state.cards.map(renderCard));
@@ -252,9 +172,6 @@ function renderCard(c, idx) {
     h("label", {}, "Grade", h("input", { type: "text", value: c.info.grade ?? "", oninput: e => set("grade", e.target.value) })));
   checks.querySelectorAll("input")[3].addEventListener("change", e => graded.classList.toggle("hide", !e.target.checked));
 
-  const listing = h("fieldset", {}, h("legend", {}, "Listing"),
-    listingFields(c.listing, rerender => { if (rerender) { listing.replaceWith(renderCard(c, idx).querySelector("fieldset")); } save(); }));
-
   const el = h("section", { class: "card", "data-i": idx },
     h("div", { class: "imgs" }, img(c.front, "Front"), img(c.back, "Back")),
     h("div", {},
@@ -264,12 +181,19 @@ function renderCard(c, idx) {
         h("span", { class: "chip", "data-role": "status" })),
       h("div", { class: "title-row" }, titleInput, h("span", { class: "count", "data-role": "count" }), autoBtn),
       c.notes ? h("div", { class: "notes" }, "Note: " + c.notes) : null,
-      fields, checks, graded, listing,
+      fields, checks, graded,
       h("ul", { class: "errors", "data-role": "errors" }),
       h("div", { class: "actions" },
-        h("button", { class: "primary", "data-role": "approve", onclick: () => { c.approved = !c.approved; refresh(); save(0); } }),
+        h("button", { class: "primary", "data-role": "approve", onclick: () => {
+          c.approved = !c.approved;
+          if (!confirmFinish()) { c.approved = !c.approved; return; }
+          refresh(); save(0); } }),
         h("label", { class: "check" }, h("input", { type: "checkbox", checked: c.skip,
-          onchange: e => { c.skip = e.target.checked; if (c.skip) c.approved = false; refresh(); save(0); } }), "Don't list this card"))));
+          onchange: e => {
+            const before = [c.skip, c.approved];
+            c.skip = e.target.checked; if (c.skip) c.approved = false;
+            if (!confirmFinish()) { [c.skip, c.approved] = before; e.target.checked = c.skip; return; }
+            refresh(); save(0); } }), "Don't list this card"))));
   return el;
 }
 
@@ -281,10 +205,6 @@ function refresh() {
     if (!el) return;
     const t = $('[data-role="title"]', el);
     if (document.activeElement !== t && t.value !== c.title) t.value = c.title;
-    const st_in = $('[data-role="start"]', el);
-    if (st_in && document.activeElement !== st_in && fromLocalInput(st_in.value) !== c.listing.start_time) st_in.value = toLocalInput(c.listing.start_time);
-    const ends = $('[data-role="ends"]', el);
-    if (ends) ends.textContent = endsText(c.listing);
     const cnt = $('[data-role="count"]', el);
     cnt.textContent = c.title.length + "/" + maxLen;
     cnt.classList.toggle("over", c.title.length > maxLen);
@@ -310,9 +230,27 @@ function refresh() {
 }
 
 $("#approveAll").onclick = () => {
+  const before = state.cards.map(c => c.approved);
   state.cards.forEach(c => { if (!c.skip && !(c.errors || []).length) c.approved = true; });
+  if (!confirmFinish()) { state.cards.forEach((c, i) => c.approved = before[i]); return; }
   refresh(); save(0);
 };
+
+// The last approve/skip finishes the batch: its approved cards move to the inventory and it becomes read-only.
+function confirmFinish() {
+  if (!state.has_inventory || !state.cards.every(c => c.approved || c.skip)) return true;
+  const n = state.cards.filter(c => c.approved && !c.skip).length;
+  return confirm(`That finishes this batch: ${n} approved card(s) move to the Inventory, where you set prices and list them. ` +
+                 "The batch can't be edited after that. Continue?");
+}
+function showFinished() {
+  const f = state.finished;
+  $("#banner").replaceChildren(h("div", { class: "done" },
+    (state.has_inventory ? `Done: ${f.to_inventory} card(s) moved to the inventory` : `Done: ${f.to_inventory} card(s) approved`)
+      + (f.skipped ? `, ${f.skipped} skipped` : "") + ". ",
+    state.has_inventory ? h("a", { href: "/inventory", style: "color:inherit" }, "Go to the inventory to price and list them →") : null));
+  document.querySelectorAll("#cards input, #cards select, #cards button, #approveAll").forEach(el => el.disabled = true);
+}
 $("#zoom").onclick = () => $("#zoom").close();
 
 fetch("api/state").then(r => r.json()).then(s => {
@@ -327,8 +265,11 @@ fetch("api/state").then(r => r.json()).then(s => {
   }
   $("#folder").textContent = s.folder + (c == null ? "" :
     " · Claude: " + (c >= 0.995 || c === 0 ? "$" + c.toFixed(2) : (c * 100).toFixed(1) + "¢"));
-  renderDefaults(); renderSchedule(); renderCards();
-  if (window.innerWidth > 700) $("#batch").open = true;  // folded away on phones
+  renderCards();
+  if (s.finished) showFinished();
+  else $("#banner").replaceChildren(h("div", {}, s.has_inventory
+    ? "Check each card's details, then approve it (or tick “Don't list”). When every card is done, the approved ones move to the Inventory, where you set prices and list them."
+    : "Check each card's details, then approve it (or tick “Don't list”)."));
 });
 </script>
 </body>

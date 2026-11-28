@@ -223,10 +223,17 @@ def cmd_ebay_status(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    from . import inventory
     from .config import EbaySettings
     from .ebay_api import EbayError, NotSignedIn
-    from .listing import ListingError, approved_cards, list_batch
+    from .listing import ListingError, list_cards
 
+    root = Path(args.root) if args.root else default_root()
+    cards = inventory.load(root, "inventory")
+    ids = args.ids or [c["id"] for c in cards]
+    if not ids:
+        print(f"Nothing in the inventory ({root / 'inventory'}). Finish a batch on the review page first.")
+        return 1
     if args.dry_run and not EbaySettings.has_keys():
         settings, client = EbaySettings.offline(), None
         print("(No eBay keys yet: previewing offline with placeholder policies.)")
@@ -240,14 +247,13 @@ def cmd_list(args: argparse.Namespace) -> int:
                 print("(Not signed in: previewing without eBay's category details.)")
                 client = None
     else:
-        n = len(approved_cards(Path(args.folder)))
         where = "the eBay SANDBOX (test site)" if settings.environment == "sandbox" else "eBay — LIVE listings"
-        if not args.yes and input(f"List {n} approved card(s) on {where}? Type yes: ").strip().lower() != "yes":
+        if not args.yes and input(f"List {len(ids)} card(s) on {where}? Type yes: ").strip().lower() != "yes":
             print("Cancelled.")
             return 1
     try:
-        list_batch(args.folder, settings, client, dry_run=args.dry_run)
-    except (ListingError, EbayError, NotSignedIn) as e:
+        list_cards(root, ids, settings, client, dry_run=args.dry_run)
+    except (ListingError, EbayError, NotSignedIn, inventory.InventoryError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
@@ -311,8 +317,9 @@ def main(argv: list[str] | None = None) -> int:
     esub.add_parser("setup", help="Pick shipping/payment/return policies and item location").set_defaults(func=cmd_ebay_setup)
     esub.add_parser("status", help="Show eBay connection and setup").set_defaults(func=cmd_ebay_status)
 
-    l = sub.add_parser("list", help="List the approved cards in a folder on eBay")
-    l.add_argument("folder")
+    l = sub.add_parser("list", help="List inventory cards on eBay (all of them, or --ids)")
+    l.add_argument("--root", default=None, help="Lister folder (default as for lister watch)")
+    l.add_argument("--ids", nargs="+", help="Only these card ids (folder names in ROOT/inventory)")
     l.add_argument("--dry-run", action="store_true", help="Show exactly what would be sent; send nothing")
     l.add_argument("--yes", action="store_true", help="Don't ask for confirmation")
     l.set_defaults(func=cmd_list)

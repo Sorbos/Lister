@@ -1,13 +1,14 @@
-"""Phase 4: turn approved cards from review.json into eBay listings.
+"""Turn inventory cards into eBay listings.
 
-For each approved card:
+For each card:
   1. upload front + back photos to eBay
   2. create/replace an inventory item (title, condition, item specifics, photos)
   3. create/update an offer (auction or fixed price, policies, optional scheduled start)
   4. publish it, either now or, in "local" schedule mode, at its start time
+  5. move the card from ROOT/inventory to ROOT/listed
 
-Progress is saved to FOLDER/ebay.json after every step, so re-running continues where it left
-off and never lists the same card twice.
+Progress is saved in each card's card.json after every step, so re-running continues where it
+left off and never lists the same card twice.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import html
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import EbaySettings
@@ -240,45 +241,27 @@ def build_offer(card: dict, sku: str, settings: EbaySettings, send_start_time: b
 
 
 # ---------------------------------------------------------------- the listing run
-class History:
-    """FOLDER/ebay.json: what has been done for each card, so runs can resume safely."""
-
-    def __init__(self, folder: Path, environment: str, clock=time.time):
-        self.path = folder / "ebay.json"
-        data = json.loads(self.path.read_text()) if self.path.exists() else {}
-        envs = data.setdefault("environments", {})
-        self.data = data
-        self.env = envs.setdefault(environment, {"cards": {}})
-        if "batch_id" not in data:
-            data["batch_id"] = datetime.fromtimestamp(clock(), timezone.utc).strftime("%y%m%d%H%M%S")
-
-    def card(self, position: int) -> dict:
-        return self.env["cards"].setdefault(str(position), {})
-
-    def sku(self, position: int) -> str:
-        return f"LST{self.data['batch_id']}-{position:02d}"
-
-    def save(self) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2))
-        tmp.replace(self.path)
+def sku_for(card: dict) -> str:
+    """eBay SKU for this listing attempt; a relisted card gets a new one (…-2, …-3)."""
+    attempt = len(card.get("listings") or []) + 1
+    base = re.sub(r"[^A-Za-z0-9-]+", "-", card["id"]).strip("-")
+    return f"L-{base}"[:46] + f"-{attempt}"
 
 
-def approved_cards(folder: Path) -> list[dict]:
-    review = folder / "review.json"
-    if not review.exists():
-        raise ListingError(f"No review.json in {folder}. Run: lister review {folder}")
-    cards = json.loads(review.read_text())["cards"]
-    return [c for c in cards if c.get("approved") and not c.get("skip")]
+def list_cards(root: str | Path, ids: list[str], settings: EbaySettings, client=None, *, dry_run: bool = False,
+               progress=print, clock=time.time, sleep=time.sleep, on_card=None) -> list[dict]:
+    """List inventory cards on eBay. Each listed card moves to ROOT/listed.
 
+    Progress is saved in each card's card.json after every step, so if something fails part-way,
+    running it again continues where it stopped and never creates a second listing.
+    client=None only makes sense with dry_run (offline preview). on_card(done, total) reports progress.
+    """
+    from . import inventory
 
-def list_batch(folder: str | Path, settings: EbaySettings, client=None, *, dry_run: bool = False,
-               progress=print, clock=time.time, sleep=time.sleep) -> dict:
-    """List every approved card. client=None only makes sense with dry_run (offline preview)."""
-    folder = Path(folder)
-    cards = approved_cards(folder)
-    if not cards:
-        raise ListingError("No approved cards. Approve some on the review page first.")
+    root = Path(root)
+    if not ids:
+        raise ListingError("No cards selected.")
+    cards = [inventory.get(root, i, "inventory") for i in ids]
     if not dry_run:
         missing = [k for k in ("fulfillment_policy_id", "payment_policy_id", "return_policy_id", "location_key")
                    if not getattr(settings, k)]
@@ -286,80 +269,100 @@ def list_batch(folder: str | Path, settings: EbaySettings, client=None, *, dry_r
             raise ListingError("eBay setup isn't finished (" + ", ".join(missing) + "). Run: lister ebay setup")
 
     now = datetime.fromtimestamp(clock(), timezone.utc)
-    problems = {c["position"]: validate_card(c, now=now) for c in cards}
-    problems = {p: e for p, e in problems.items() if e}
+    problems = [(c, validate_card({**c, "skip": False}, now=now)) for c in cards]
+    problems = [(c, e) for c, e in problems if e]
     if problems:
-        lines = [f"  card {p}: {'; '.join(e)}" for p, e in sorted(problems.items())]
-        raise ListingError("Fix these on the review page first:\n" + "\n".join(lines))
+        lines = [f"  {c['title'] or c['id']}: {'; '.join(e)}" for c, e in problems]
+        raise ListingError("Fix these in the inventory first:\n" + "\n".join(lines))
 
-    history = History(folder, settings.environment, clock)
     local_mode = settings.schedule_mode == "local"
     meta: dict[str, tuple] = {}
-    previews, queue = [], []
+    previews, queue, done = [], [], 0
+    total = len(cards)
+
+    def tick():
+        if on_card:
+            on_card(done, total)
 
     for card in cards:
-        pos = card["position"]
-        rec = history.card(pos)
-        sku = history.sku(pos)
-        if rec.get("listing_id"):
-            progress(f"Card {pos}: already listed (eBay item {rec['listing_id']}), skipping")
-            continue
+        name = card["title"]
+        rec = card.get("ebay") or {}
+        if rec.get("environment") not in (None, settings.environment):
+            rec = {}  # a sandbox test doesn't count as a live listing
+        sku = rec.get("sku") or sku_for(card)
         cat = category_for(card["info"])
         if cat not in meta:
             meta[cat] = (client.condition_policy(cat), client.item_aspects(cat)) if client else (None, None)
         policy, aspects_meta = meta[cat]
+        folder = card["_folder"]
 
         if dry_run:
             images = [str(folder / card[k]) for k in ("front", "back") if card.get(k)]
         else:
+            rec.update(environment=settings.environment, sku=sku)
+            card["ebay"] = rec
             images = rec.get("image_urls")
             if not images:
-                progress(f"Card {pos}: uploading photos…")
+                progress(f"{name}: uploading photos…")
                 images = [client.upload_image(folder / card[k]) for k in ("front", "back") if card.get(k)]
                 rec["image_urls"] = images
-                history.save()
+                inventory.save(card)
 
         item, warnings = build_item(card, images, policy, aspects_meta, settings)
         offer = build_offer(card, sku, settings, send_start_time=not local_mode)
         for w in warnings:
-            progress(f"Card {pos}: note: {w}")
+            progress(f"{name}: note: {w}")
 
         start = parse_time(card["listing"].get("start_time"))
         when = (f"scheduled for {start.astimezone():%a %d %b %H:%M}" if start else "goes live now")
         if dry_run:
-            previews.append({"position": pos, "sku": sku, "inventory_item": item, "offer": offer, "notes": warnings})
-            progress(f"Card {pos}: [dry run] {card['title']}  ({offer['format']}, {when})")
+            previews.append({"id": card["id"], "sku": sku, "inventory_item": item, "offer": offer, "notes": warnings})
+            progress(f"[preview] {name}  ({offer['format']}, {when})")
+            done += 1
+            tick()
             continue
 
         client.put_inventory_item(sku, item)
         rec["offer_id"] = client.create_or_update_offer(sku, offer)
-        rec["sku"] = sku
-        history.save()
+        inventory.save(card)
 
         if local_mode and start and start > datetime.fromtimestamp(clock(), timezone.utc):
-            queue.append((start, pos, card))
-            progress(f"Card {pos}: ready, will publish at {start.astimezone():%a %d %b %H:%M}")
+            queue.append((start, card))
+            progress(f"{name}: ready, will go live at {start.astimezone():%a %d %b %H:%M}")
             continue
-        _publish(client, history, pos, card, progress, clock, when)
+        _publish(root, card, progress, clock, when, client)
+        done += 1
+        tick()
 
     if queue:
-        progress(f"Keep this window open: {len(queue)} card(s) will be published at their start times.")
-        for start, pos, card in sorted(queue, key=lambda q: q[0]):
+        progress(f"Keep Lister running: {len(queue)} card(s) will go live at their start times.")
+        for start, card in sorted(queue, key=lambda q: q[0]):
             wait = (start - datetime.fromtimestamp(clock(), timezone.utc)).total_seconds()
             if wait > 0:
                 sleep(wait)
-            _publish(client, history, pos, card, progress, clock, "went live")
+            _publish(root, card, progress, clock, "went live", client)
+            done += 1
+            tick()
 
     if dry_run:
-        (folder / "ebay_preview.json").write_text(json.dumps(previews, indent=2))
-        progress(f"Dry run: nothing was sent to eBay. Full details in {folder / 'ebay_preview.json'}")
-    return history.env
+        (root / "ebay_preview.json").write_text(json.dumps(previews, indent=2))
+        progress(f"Preview only: nothing was sent to eBay. Details in {root / 'ebay_preview.json'}")
+        return previews
+    return cards
 
 
-def _publish(client, history, pos, card, progress, clock, when):
-    rec = history.card(pos)
+def _publish(root: Path, card: dict, progress, clock, when: str, client) -> None:
+    from . import inventory
+
+    rec = card["ebay"]
     rec["listing_id"] = client.publish_offer(rec["offer_id"])
     rec["published_at"] = datetime.fromtimestamp(clock(), timezone.utc).isoformat()
-    rec["title"] = card["title"]
-    history.save()
-    progress(f"Card {pos}: listed as eBay item {rec['listing_id']} ({when})")
+    start = parse_time(card["listing"].get("start_time"))
+    if card["listing"]["format"] == "auction":
+        begin = start or datetime.fromtimestamp(clock(), timezone.utc)
+        rec["ends_at"] = (begin + timedelta(days=card["listing"]["duration_days"])).isoformat()
+    rec["listing"] = dict(card["listing"])
+    inventory.save(card)
+    inventory.relocate(root, card, "listed")
+    inventory.save(card)
+    progress(f"{card['title']}: listed as eBay item {rec['listing_id']} ({when})")

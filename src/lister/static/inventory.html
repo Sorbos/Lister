@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lister Inventory</title>
+<style>
+:root { color-scheme: light;
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #677085; --line: #dde1e8;
+  --accent: #2b6cb0; --accent-text: #fff; --ok: #237a4b; --ok-bg: #e5f4ec; --warn: #a15c00;
+  --warn-bg: #fff4e0; --err: #b42318; --err-bg: #fdecea; --input: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark;
+    --bg: #14171c; --panel: #1d2128; --text: #e7eaf0; --muted: #98a1b3; --line: #2e343e;
+    --accent: #5b9be0; --accent-text: #0d1117; --ok: #5fcf8e; --ok-bg: #173325; --warn: #f0b45a;
+    --warn-bg: #3a2c12; --err: #ff8a80; --err-bg: #3d1c1a; --input: #15181d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 16px; }
+h1 { font-size: 18px; margin: 0; }
+header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.panel h2 { font-size: 14px; margin: 0 0 8px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.toolbar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+           background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.toolbar .grow { flex: 1; }
+label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+input, select, button { font: inherit; color: var(--text); }
+input[type=text], input[type=number], input[type=datetime-local], select {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); }
+.row label { width: 140px; }
+.row label.wide { width: 210px; }
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--line); color: var(--muted); white-space: nowrap; }
+.chip.ok { background: var(--ok-bg); color: var(--ok); }
+.chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.err { background: var(--err-bg); color: var(--err); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+        display: grid; grid-template-columns: 28px 150px 1fr; gap: 12px; align-items: start; }
+.card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.card input[type=checkbox] { width: 20px; height: 20px; margin-top: 4px; }
+.imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.imgs img { width: 100%; border-radius: 3px; cursor: zoom-in; background: var(--line); }
+.title-row { display: flex; gap: 6px; align-items: center; }
+.title-row input { font-weight: 600; }
+.count { font-size: 12px; color: var(--muted); min-width: 42px; text-align: right; }
+.count.over { color: var(--err); font-weight: 600; }
+.meta { font-size: 12px; color: var(--muted); margin: 4px 0 6px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 8px; margin-top: 6px; }
+.grid input, .grid select { min-width: 0; }
+.ends { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.errors { color: var(--err); font-size: 13px; margin: 6px 0 0; padding: 0; list-style: none; }
+.job { display: grid; gap: 6px; }
+.bar { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.log { font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); max-height: 160px; overflow: auto;
+       white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg { font-size: 13px; padding: 8px 10px; border-radius: 6px; }
+.msg.err { background: var(--err-bg); color: var(--err); }
+.msg.warn { background: var(--warn-bg); color: var(--warn); }
+.empty { color: var(--muted); padding: 20px; text-align: center; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+a { color: var(--accent); }
+details > summary { cursor: pointer; font-weight: 600; }
+dialog { border: none; padding: 0; background: transparent; }
+dialog img { max-width: 95vw; max-height: 92vh; display: block; }
+dialog::backdrop { background: rgb(0 0 0 / .75); }
+.hide { display: none !important; }
+@media (max-width: 700px) {
+  .card { grid-template-columns: 24px 1fr; }
+  .card .imgs { grid-column: 2; max-width: 220px; }
+  .card .body { grid-column: 1 / -1; }
+  .row label, .row label.wide { width: calc(50% - 4px); }
+}
+</style>
+</head>
+<body>
+{{NAV}}
+<header>
+  <h1 id="h1"></h1>
+  <p id="sub"></p>
+</header>
+<main id="main"></main>
+<dialog id="zoom"><img alt=""></dialog>
+<script>
+const STAGE = "{{STAGE}}";
+const DAYS = [1, 3, 5, 7, 10];
+let data = null, selected = new Set(), timer = null, polling = null, pending = new Map();
+const $ = (s, el = document) => el.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v === true) el.setAttribute(k, "");
+    else if (v !== false && v != null) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+  return el;
+};
+const pad = n => String(n).padStart(2, "0");
+const toLocal = iso => { if (!iso) return ""; const d = new Date(iso);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const fromLocal = v => v ? new Date(v).toISOString() : null;
+const fmt = iso => iso ? new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "";
+const money = v => v == null || v === "" ? "" : "$" + Number(v).toFixed(2);
+const zoom = src => { $("img", $("#zoom")).src = src; $("#zoom").showModal(); };
+$("#zoom").onclick = () => $("#zoom").close();
+
+async function api(body) {
+  const r = await fetch("/api/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function load() {
+  const r = await fetch("/api/inventory?stage=" + STAGE, { cache: "no-store" });
+  data = await r.json();
+  for (const id of [...selected]) if (!data.cards.some(c => c.id === id)) selected.delete(id);
+  render();
+}
+function after(d) { data = d; if (d.error) flash(d.error); render(); }
+function flash(text, kind = "err") { const m = $("#flash"); if (m) { m.className = "msg " + kind; m.textContent = text; } }
+
+// ---------------------------------------------------------------- per-card edits (debounced)
+function queueEdit(card, change) {
+  pending.set(card.id, { ...(pending.get(card.id) || { id: card.id }), ...change,
+    listing: { ...((pending.get(card.id) || {}).listing || {}), ...(change.listing || {}) } });
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    const cards = [...pending.values()]; pending.clear();
+    try { const d = await api({ action: "update", cards }); data = d; refreshCards(); }
+    catch (e) { flash("Couldn't save: " + e.message); }
+  }, 400);
+}
+function endsText(l) {
+  if (l.format !== "auction") return l.start_time ? "Goes live " + fmt(l.start_time) : "Goes live as soon as it's listed";
+  if (!l.start_time) return `Ends ${l.duration_days} days after it's listed`;
+  return "Ends " + fmt(new Date(new Date(l.start_time).getTime() + l.duration_days * 864e5).toISOString());
+}
+
+function listingFields(card) {
+  const l = card.listing, wrap = h("div", { class: "grid" });
+  const field = (label, input) => wrap.append(h("label", {}, label, input));
+  const num = (key, label, ph) => field(label, h("input", { type: "number", min: "0", step: "0.01", value: l[key] ?? "", placeholder: ph || "",
+    oninput: e => { l[key] = e.target.value === "" ? null : Number(e.target.value); queueEdit(card, { listing: { [key]: l[key] } }); updateEnds(card); } }));
+  field("Format", h("select", { onchange: e => { l.format = e.target.value; queueEdit(card, { listing: { format: l.format } }); rerenderCard(card); } },
+    h("option", { value: "auction", selected: l.format === "auction" }, "Auction"),
+    h("option", { value: "fixed_price", selected: l.format === "fixed_price" }, "Fixed price")));
+  if (l.format === "auction") {
+    num("start_price", "Starting price $");
+    field("Length", h("select", { onchange: e => { l.duration_days = Number(e.target.value); queueEdit(card, { listing: { duration_days: l.duration_days } }); updateEnds(card); } },
+      DAYS.map(d => h("option", { value: d, selected: l.duration_days === d }, d + (d === 1 ? " day" : " days")))));
+    num("buy_it_now", "Buy It Now $", "optional");
+    num("reserve", "Reserve $", "optional");
+  } else num("price", "Price $");
+  field("Starts (empty = right away)", h("input", { type: "datetime-local", value: toLocal(l.start_time), "data-role": "start",
+    oninput: e => { l.start_time = fromLocal(e.target.value); queueEdit(card, { listing: { start_time: l.start_time } }); updateEnds(card); } }));
+  return wrap;
+}
+
+function renderCard(card) {
+  const isInv = STAGE === "inventory";
+  const check = h("input", { type: "checkbox", checked: selected.has(card.id), "aria-label": "Select " + card.title,
+    onchange: e => { e.target.checked ? selected.add(card.id) : selected.delete(card.id); el.classList.toggle("sel", e.target.checked); renderToolbar(); } });
+  const imgs = h("div", { class: "imgs" },
+    card.front ? h("img", { src: card.front, alt: "Front", loading: "lazy", onclick: () => zoom(card.front) }) : null,
+    card.back ? h("img", { src: card.back, alt: "Back", loading: "lazy", onclick: () => zoom(card.back) }) : null);
+  const src = card.source ? `from ${card.source.batch}, card ${card.source.position}` : "";
+  let body;
+  if (isInv) {
+    const title = h("input", { type: "text", value: card.title, "data-role": "title",
+      oninput: e => { card.title = e.target.value; card.title_custom = true; queueEdit(card, { title: card.title, title_custom: true }); updateCount(el, card); } });
+    body = h("div", { class: "body" },
+      h("div", { class: "title-row" }, title, h("span", { class: "count", "data-role": "count" }),
+        card.title_custom ? h("button", { title: "Rebuild title from the card details", onclick: () => queueEdit(card, { title_custom: false }) }, "Auto") : null),
+      h("div", { class: "meta" }, src, card.relisted ? h("span", { class: "chip warn", style: "margin-left:6px" }, `relisting (${card.relisted} before)`) : null),
+      listingFields(card),
+      h("div", { class: "ends", "data-role": "ends" }, endsText(card.listing)),
+      h("ul", { class: "errors", "data-role": "errors" }, (card.errors || []).map(e => h("li", {}, "• " + e))));
+  } else {
+    const eb = card.ebay || {}, l = eb.listing || card.listing;
+    const price = l.format === "auction" ? `Auction from ${money(l.start_price)}` + (l.buy_it_now ? ` · Buy It Now ${money(l.buy_it_now)}` : "") : `Fixed price ${money(l.price)}`;
+    const when = STAGE === "listed"
+      ? (eb.ends_at ? "Ends " + fmt(eb.ends_at) : "Good 'til cancelled") + (l.start_time ? ` · starts ${fmt(l.start_time)}` : "")
+      : "Sold " + fmt(card.sold_at);
+    body = h("div", { class: "body" },
+      h("div", { style: "font-weight:600" }, card.title),
+      h("div", { class: "meta" }, price, " · ", when),
+      h("div", { class: "meta" }, eb.listing_id ? `eBay item ${eb.listing_id}` : "", eb.environment === "sandbox" ? h("span", { class: "chip warn", style: "margin-left:6px" }, "sandbox") : null, src ? " · " + src : ""),
+      STAGE === "listed" ? h("div", { class: "actions" },
+        h("button", { onclick: () => move("sold", [card.id]) }, "Sold"),
+        h("button", { onclick: () => move("back", [card.id]) }, "Didn't sell → back to inventory")) : null);
+  }
+  const el = h("section", { class: "card" + (selected.has(card.id) ? " sel" : ""), "data-id": card.id },
+    STAGE === "sold" ? h("span") : check, imgs, body);
+  if (isInv) updateCount(el, card);
+  return el;
+}
+function updateCount(el, card) {
+  const c = $('[data-role="count"]', el); if (!c) return;
+  c.textContent = card.title.length + "/" + data.max_len; c.classList.toggle("over", card.title.length > data.max_len);
+}
+function updateEnds(card) { const el = $(`.card[data-id="${CSS.escape(card.id)}"] [data-role="ends"]`); if (el) el.textContent = endsText(card.listing); }
+function rerenderCard(card) { const old = $(`.card[data-id="${CSS.escape(card.id)}"]`); if (old) old.replaceWith(renderCard(card)); }
+// After a save: refresh titles and problems without disturbing what you're typing.
+function refreshCards() {
+  for (const card of data.cards) {
+    const el = $(`.card[data-id="${CSS.escape(card.id)}"]`); if (!el) continue;
+    const t = $('[data-role="title"]', el);
+    if (t && document.activeElement !== t) t.value = card.title;
+    const s = $('[data-role="start"]', el);
+    if (s && document.activeElement !== s) s.value = toLocal(card.listing.start_time);
+    updateCount(el, card); updateEnds(card);
+    const errs = $('[data-role="errors"]', el);
+    if (errs) errs.replaceChildren(...(card.errors || []).map(e => h("li", {}, "• " + e)));
+  }
+  renderToolbar();
+}
+
+// ---------------------------------------------------------------- bulk tools (inventory)
+const bulk = { format: "auction", start_price: 0.99, duration_days: 7, buy_it_now: null, reserve: null, price: null };
+const sched = { first: "", interval: 5 };
+function bulkPanel() {
+  const f = h("div", { class: "row" });
+  const num = (key, label, ph) => f.append(h("label", {}, label, h("input", { type: "number", min: "0", step: "0.01", value: bulk[key] ?? "", placeholder: ph || "",
+    oninput: e => bulk[key] = e.target.value === "" ? null : Number(e.target.value) })));
+  f.append(h("label", {}, "Format", h("select", { onchange: e => { bulk.format = e.target.value; $("#bulk").replaceWith(bulkPanel()); } },
+    h("option", { value: "auction", selected: bulk.format === "auction" }, "Auction"),
+    h("option", { value: "fixed_price", selected: bulk.format === "fixed_price" }, "Fixed price"))));
+  if (bulk.format === "auction") {
+    num("start_price", "Starting price $");
+    f.append(h("label", {}, "Length", h("select", { onchange: e => bulk.duration_days = Number(e.target.value) },
+      DAYS.map(d => h("option", { value: d, selected: bulk.duration_days === d }, d + (d === 1 ? " day" : " days"))))));
+    num("buy_it_now", "Buy It Now $", "optional");
+    num("reserve", "Reserve $", "optional");
+  } else num("price", "Price $");
+  f.append(h("button", { class: "primary", onclick: async () => {
+    const ids = [...selected]; if (!ids.length) return flash("Select some cards first.", "warn");
+    const listing = bulk.format === "auction"
+      ? { format: "auction", start_price: bulk.start_price, duration_days: bulk.duration_days, buy_it_now: bulk.buy_it_now, reserve: bulk.reserve }
+      : { format: "fixed_price", price: bulk.price };
+    after(await api({ action: "bulk", ids, listing }));
+  } }, "Apply to selected"));
+
+  const s = h("div", { class: "row", style: "margin-top:10px" },
+    h("label", { class: "wide" }, "First card starts", h("input", { type: "datetime-local", value: sched.first, oninput: e => sched.first = e.target.value })),
+    h("label", {}, "Then every (minutes)", h("input", { type: "number", min: "0", step: "1", value: sched.interval, oninput: e => sched.interval = Number(e.target.value) })),
+    h("button", { class: "primary", onclick: async () => {
+      const ids = order().filter(id => selected.has(id)); if (!ids.length) return flash("Select some cards first.", "warn");
+      if (!sched.first) return flash("Pick when the first card starts.", "warn");
+      after(await api({ action: "stagger", ids, first_start: fromLocal(sched.first), interval_minutes: sched.interval }));
+    } }, "Stagger selected"),
+    h("button", { onclick: async () => { const ids = [...selected]; if (ids.length) after(await api({ action: "clear_start", ids })); } }, "Start selected right away"));
+  return h("details", { class: "panel", id: "bulk", open: window.innerWidth > 700 || null },
+    h("summary", {}, "Set many cards at once"),
+    h("p", { class: "meta" }, "Tick cards below, then apply prices and length, or stagger their start times in the order shown, so auctions end a few minutes apart."),
+    f, s);
+}
+const order = () => data.cards.map(c => c.id);
+
+function renderToolbar() {
+  const t = $("#toolbar"); if (!t) return;
+  const n = selected.size, all = data.cards.length;
+  const selCards = data.cards.filter(c => selected.has(c.id));
+  const bad = selCards.filter(c => (c.errors || []).length).length;
+  const eb = data.ebay || {};
+  const where = eb.environment === "production" ? "eBay (LIVE)" : "eBay sandbox";
+  t.replaceChildren(...[
+    h("label", { style: "display:flex;gap:6px;align-items:center;color:var(--text);font-size:13px" },
+      h("input", { type: "checkbox", checked: !!(n && n === all), onchange: e => { e.target.checked ? data.cards.forEach(c => selected.add(c.id)) : selected.clear(); render(); } }),
+      n ? `${n} of ${all} selected` : `Select all ${all}`),
+    h("span", { class: "grow" }),
+    STAGE === "inventory" ? [
+      bad ? h("span", { class: "chip err" }, `${bad} selected need fixing`) : null,
+      h("button", { disabled: !n || !!running(), onclick: () => startList(true) }, "Preview"),
+      h("button", { class: "primary", disabled: !n || !!bad || !eb.ready || !!running(), title: eb.ready ? "" : eb.message,
+        onclick: () => startList(false) }, n ? `List ${n} on ${where}` : `List on ${where}`),
+    ] : STAGE === "listed" ? [
+      h("button", { disabled: !n, onclick: () => move("sold", [...selected]) }, "Mark sold"),
+      h("button", { disabled: !n, onclick: () => move("back", [...selected]) }, "Didn't sell → back to inventory"),
+    ] : []].flat().filter(Boolean));
+}
+const running = () => data.job && data.job.running;
+async function move(action, ids) {
+  if (action === "back" && !confirm(`Move ${ids.length} card(s) back to the inventory to re-price and list again?`)) return;
+  selected.clear(); after(await api({ action, ids }));
+}
+async function startList(dry) {
+  const ids = order().filter(id => selected.has(id));
+  const eb = data.ebay || {};
+  if (!dry && !confirm(`List ${ids.length} card(s) on ${eb.environment === "production" ? "eBay — these will be LIVE listings" : "the eBay sandbox (test site)"}?`)) return;
+  after(await api({ action: "list", ids, dry_run: dry }));
+  watchJob();
+}
+function watchJob() {
+  clearInterval(polling);
+  polling = setInterval(async () => {
+    const r = await fetch("/api/inventory?stage=" + STAGE, { cache: "no-store" });
+    const d = await r.json();
+    data.job = d.job; renderJob();
+    if (!d.job || !d.job.running) { clearInterval(polling); data = d; render(); }
+  }, 1000);
+}
+function renderJob() {
+  const box = $("#job"); if (!box) return;
+  const j = data.job;
+  if (!j) return box.classList.add("hide");
+  box.classList.remove("hide");
+  const pct = j.total ? Math.round(100 * j.done / j.total) : 0;
+  const head = j.running ? `${j.dry_run ? "Previewing" : "Listing"}… ${j.done} of ${j.total}`
+    : j.error ? `${j.dry_run ? "Preview" : "Listing"} stopped: ${j.error}` : `${j.dry_run ? "Preview" : "Listing"} finished: ${j.done} of ${j.total}`;
+  box.replaceChildren(h("div", { class: "job" },
+    h("b", { style: j.error ? "color:var(--err)" : "" }, head),
+    h("div", { class: "bar" }, h("span", { style: `width:${pct}%` })),
+    h("div", { class: "log" }, (j.log || []).slice(-30).join("\n")),
+    !j.running && !j.dry_run && !j.error ? h("a", { href: "/listed" }, "See listed cards →") : null,
+    !j.running ? h("button", { onclick: () => { data.job = null; box.classList.add("hide"); } }, "Close") : null));
+}
+
+function render() {
+  const n = data.cards.length;
+  const titles = { inventory: "Inventory", listed: "Listed on eBay", sold: "Sold" };
+  $("#h1").textContent = `${titles[STAGE]} · ${n} card${n === 1 ? "" : "s"}`;
+  const c = data.counts || {};
+  $("#sub").replaceChildren(...[].concat(STAGE === "inventory"
+    ? ["Cards from finished batches, ready to price and list. ", data.ebay && !data.ebay.ready ? h("span", { class: "chip warn" }, data.ebay.message) :
+        data.ebay ? h("span", { class: "chip ok" }, data.ebay.environment === "production" ? "Connected to eBay (live)" : "Connected to the eBay sandbox") : null]
+    : STAGE === "listed" ? ["Live or scheduled on eBay. When an item sells, mark it Sold; if it doesn't, send it back to the inventory to relist."]
+    : ["Sold cards."]).filter(Boolean));
+  const main = $("#main");
+  main.replaceChildren(...[
+    h("div", { id: "flash" }),
+    STAGE === "inventory" ? bulkPanel() : null,
+    STAGE === "inventory" ? h("div", { class: "panel hide", id: "job" }) : null,
+    n ? h("div", { class: "toolbar", id: "toolbar" }) : null,
+    ...(n ? data.cards.map(renderCard) : [h("div", { class: "panel empty" },
+      STAGE === "inventory" ? "Nothing here yet. When every card in a batch is approved or skipped, its approved cards land here."
+      : STAGE === "listed" ? "Nothing listed right now." : "No sold cards yet.")]),
+    STAGE === "listed" ? h("details", { class: "panel", id: "soldbox", ontoggle: e => e.target.open && loadSold() },
+      h("summary", {}, `Sold (${c.sold || 0})`), h("div", { id: "sold" })) : null].filter(Boolean));
+  renderToolbar(); renderJob();
+  if (running()) watchJob();
+}
+async function loadSold() {
+  const r = await fetch("/api/inventory?stage=sold", { cache: "no-store" });
+  const d = await r.json();
+  $("#sold").replaceChildren(...(d.cards.length ? d.cards.map(c => h("div", { class: "meta" },
+    `${c.title} · ${c.ebay && c.ebay.listing_id ? "eBay item " + c.ebay.listing_id + " · " : ""}sold ${fmt(c.sold_at)}`)) : [h("div", { class: "meta" }, "None yet.")]));
+}
+load();
+</script>
+</body>
+</html>

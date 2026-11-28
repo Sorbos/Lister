@@ -40,7 +40,6 @@ DEFAULT_LISTING = {
     "start_time": None,  # UTC ISO string ("2026-11-23T00:05:00Z"); None = start immediately
 }
 MAX_SCHEDULE_AHEAD = timedelta(days=21)  # eBay allows scheduling up to 3 weeks ahead
-DEFAULT_SCHEDULE = {"first_start": None, "interval_minutes": 5}
 
 
 def _blank_info() -> dict:
@@ -77,11 +76,10 @@ def initial_state(folder: Path) -> dict:
             **_card_from_identified(c),
             "edited": False,
             "title_custom": False,
-            "listing": dict(DEFAULT_LISTING),
             "skip": False,
             "approved": False,
         })
-    return {"defaults": dict(DEFAULT_LISTING), "schedule": dict(DEFAULT_SCHEDULE), "cards": out}
+    return {"cards": out}
 
 
 def parse_time(v) -> datetime | None:
@@ -99,23 +97,6 @@ def iso(t: datetime) -> str:
     return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def stagger(cards: list[dict], first_start, interval_minutes: float) -> None:
-    """Give each card that will be listed a start time: first_start, +interval, +2×interval, …
-
-    Cards keep their order on the scanner. Skipped and already-approved cards are left alone.
-    """
-    first = parse_time(first_start)
-    if first is None:
-        raise ValueError("Pick when the first card should start")
-    step = timedelta(minutes=max(0, float(interval_minutes or 0)))
-    n = 0
-    for card in sorted(cards, key=lambda c: c["position"]):
-        if card["skip"] or card["approved"]:
-            continue
-        card["listing"]["start_time"] = iso(first + n * step)
-        n += 1
-
-
 def _num(v):
     try:
         return None if v in (None, "") else round(float(v), 2)
@@ -123,17 +104,26 @@ def _num(v):
         return None
 
 
-def validate_card(card: dict, now: datetime | None = None) -> list[str]:
+def validate_details(card: dict) -> list[str]:
+    """What a batch card needs before it can be approved (into the inventory)."""
     errs = []
-    if card["skip"]:
+    if card.get("skip"):
         return errs
-    title = card["title"].strip()
+    title = (card.get("title") or "").strip()
     if not title:
         errs.append("Title is empty")
     elif len(title) > MAX_LEN:
         errs.append(f"Title is {len(title)} characters (max {MAX_LEN})")
     if not (card["info"].get("subject") or "").strip():
         errs.append("Player/subject is empty")
+    return errs
+
+
+def validate_card(card: dict, now: datetime | None = None) -> list[str]:
+    """Details plus listing settings: what an inventory card needs before it can be listed."""
+    errs = validate_details(card)
+    if card.get("skip"):
+        return errs
     lst = card["listing"]
     if lst["format"] == "fixed_price":
         if not lst["price"] or lst["price"] <= 0:
@@ -168,17 +158,10 @@ def normalise(state: dict) -> dict:
                 info[k] = bool(v)
             elif isinstance(v, str):
                 info[k] = v.strip() or (None if k != "subject" else "")
-        lst = card["listing"]
-        for k in ("price", "start_price", "buy_it_now", "reserve"):
-            lst[k] = _num(lst.get(k))
-        lst["duration_days"] = int(lst.get("duration_days") or 7)
-        t = parse_time(lst.get("start_time"))
-        lst["start_time"] = iso(t) if t else None
-        if lst.get("format") not in ("auction", "fixed_price"):
-            lst["format"] = "auction"
+        card.pop("listing", None)  # listing settings live in the inventory now
         if not card.get("title_custom"):
             card["title"] = build_title(info) if info.get("subject") else ""
-        card["errors"] = validate_card(card)
+        card["errors"] = validate_details(card)
         if card["errors"] or card["skip"]:
             card["approved"] = False
     return state
@@ -192,9 +175,8 @@ class BatchState:
         self.path = self.folder / "review.json"
         self.lock = threading.Lock()
         state = json.loads(self.path.read_text()) if self.path.exists() else initial_state(self.folder)
-        state.setdefault("schedule", dict(DEFAULT_SCHEDULE))
-        for c in state["cards"]:
-            c["listing"].setdefault("start_time", None)
+        for k in ("defaults", "schedule", "schedule_error"):  # from older versions
+            state.pop(k, None)
         if not self.path.exists() and (self.folder / "cards.json").exists():
             state["cards_json_mtime"] = (self.folder / "cards.json").stat().st_mtime
         self.state = normalise(state)
@@ -213,6 +195,8 @@ class BatchState:
     def merge_identified(self) -> bool:
         """If Claude's results (cards.json) are newer than what the review last took in, fill them into
         every card you haven't edited or approved. Your own edits are never overwritten."""
+        if self.state.get("finished"):
+            return False
         f = self.folder / "cards.json"
         try:
             mtime = f.stat().st_mtime
@@ -234,11 +218,34 @@ class BatchState:
         self.state = normalise(self.state)
         return True
 
+    @property
+    def root(self) -> Path | None:
+        """The Lister folder, when this batch lives in ROOT/batches/<name>."""
+        return self.folder.parent.parent if self.folder.parent.name == "batches" else None
+
     def payload(self) -> dict:
         with self.lock:
-            if self.merge_identified():
+            if not self.state.get("finished") and self.merge_identified():
                 self._save()
-        return {**self.state, "folder": self.folder.name, "max_len": MAX_LEN, "claude_cost_usd": self.claude_cost()}
+        return {**self.state, "folder": self.folder.name, "max_len": MAX_LEN, "claude_cost_usd": self.claude_cost(),
+                "has_inventory": self.root is not None}
+
+    def _finish_if_done(self) -> None:
+        """Every card approved or skipped: send the approved ones to the inventory; the batch is then read-only."""
+        cards = self.state["cards"]
+        if self.state.get("finished") or not cards or not all(c.get("approved") or c.get("skip") for c in cards):
+            return
+        sent = []
+        if self.root is not None:
+            from . import inventory, settings
+
+            sent = inventory.send_batch(self.folder, cards, self.root, settings.load(self.root).get("listing_defaults"))
+        approved = sum(1 for c in cards if c.get("approved") and not c.get("skip"))
+        skipped = len(cards) - approved
+        self.state["finished"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                  "to_inventory": approved, "skipped": skipped, "ids": sent}
+        msg = f"{approved} card(s) in inventory" + (f", {skipped} skipped" if skipped else "")
+        (self.folder / "status.json").write_text(json.dumps({"stage": "done", "message": msg}))
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -247,6 +254,8 @@ class BatchState:
 
     def update(self, new_state: dict) -> dict:
         with self.lock:
+            if self.state.get("finished"):
+                return self.state  # read-only once its cards are in the inventory
             # Only accept edits to known cards; image paths can't be changed from the page.
             by_pos = {c["position"]: c for c in self.state["cards"]}
             for incoming in new_state.get("cards", []):
@@ -258,23 +267,11 @@ class BatchState:
                         incoming.get("title_custom") and incoming.get("title") != card.get("title")):
                     card["edited"] = True  # Claude's later results won't overwrite this card
                 card["info"].update(new_info)
-                card["listing"].update({k: incoming["listing"].get(k) for k in DEFAULT_LISTING if k in incoming.get("listing", {})})
                 for k in ("title", "title_custom", "skip", "approved"):
                     if k in incoming:
                         card[k] = incoming[k]
-            if "schedule" in new_state:
-                sched = self.state.setdefault("schedule", dict(DEFAULT_SCHEDULE))
-                sched.update({k: new_state["schedule"].get(k) for k in DEFAULT_SCHEDULE if k in new_state["schedule"]})
-            if new_state.get("apply_schedule"):
-                sched = self.state.get("schedule", DEFAULT_SCHEDULE)
-                try:
-                    stagger(self.state["cards"], sched["first_start"], sched["interval_minutes"])
-                    self.state.pop("schedule_error", None)
-                except ValueError as e:
-                    self.state["schedule_error"] = str(e)
-            if "defaults" in new_state:
-                self.state["defaults"].update({k: new_state["defaults"].get(k) for k in DEFAULT_LISTING if k in new_state["defaults"]})
             self.state = normalise(self.state)
+            self._finish_if_done()
             self._save()
             return self.state
 
@@ -288,7 +285,8 @@ def batch_status(folder: Path) -> dict:
         return {"stage": "ready"}
 
 
-NAV_PAGES = [("batches", "/", "Batches"), ("settings", "/settings", "Settings"), ("costs", "/costs", "Costs")]
+NAV_PAGES = [("batches", "/", "Batches"), ("inventory", "/inventory", "Inventory"), ("listed", "/listed", "Listed"),
+             ("settings", "/settings", "Settings"), ("costs", "/costs", "Costs")]
 NAV_CSS = """<style>
 .nav { display: flex; align-items: center; gap: 2px; background: var(--panel); border-bottom: 1px solid var(--line);
        padding: 0 12px; overflow-x: auto; }
@@ -315,6 +313,8 @@ class ReviewServer:
         self.folder = Path(folder).resolve()
         self.batches: dict[str, BatchState] = {}
         self._lock = threading.Lock()
+        self.job: dict | None = None  # the current/last listing run started from the Inventory page
+        self._job_lock = threading.Lock()
         if not hub:
             self.single = BatchState(self.folder)
             self.path = self.single.path
@@ -427,6 +427,10 @@ class ReviewServer:
                 pos = queue.index(f) + 1 if f in queue else 1
                 nth = {1: "next", 2: "2nd in line", 3: "3rd in line"}.get(pos, f"{pos}th in line")
                 status, link = f'<span class="chip warn">{n} cards · waiting to be read ({nth})</span>', name
+            elif st["stage"] == "done":
+                status = (f'<span class="chip ok">Done · {note}</span> <a class="small" href="/inventory">'
+                          "Go to inventory →</a>")
+                link = f'<a href="b/{name}/">{name}</a>'
             elif st["stage"] == "error":
                 status, link = f'<span class="chip err">{note or "problem"}</span>', f'<a href="b/{name}/">{name}</a>'
             else:
@@ -453,6 +457,122 @@ class ReviewServer:
         page = page.replace("{{INBOX}}", html_escape(str(settings.inbox(self.folder))))
         page = page.replace("{{LIVE}}", live)
         return page.encode()
+
+    # ------------------------------------------------------------ inventory
+    def ebay_status(self) -> dict:
+        from .config import EbaySettings
+
+        if not EbaySettings.has_keys():
+            return {"ready": False, "environment": None,
+                    "message": "eBay isn't connected yet (no eBay keys). You can still preview."}
+        try:
+            from .ebay_api import EbayClient, NotSignedIn
+
+            settings = EbaySettings.load()
+            try:
+                EbayClient(settings).access_token()
+            except NotSignedIn:
+                return {"ready": False, "environment": settings.environment,
+                        "message": "Not signed in to eBay. Run: lister ebay login"}
+            missing = [k for k in ("fulfillment_policy_id", "payment_policy_id", "return_policy_id", "location_key")
+                       if not getattr(settings, k)]
+            if missing:
+                return {"ready": False, "environment": settings.environment,
+                        "message": "eBay setup isn't finished. Run: lister ebay setup"}
+            return {"ready": True, "environment": settings.environment, "message": ""}
+        except (SystemExit, Exception) as e:  # noqa: BLE001 - shown to the user, never fatal
+            return {"ready": False, "environment": None, "message": f"eBay problem: {e}"}
+
+    def inventory_payload(self, stage: str = "inventory") -> dict:
+        from . import inventory
+
+        cards = []
+        for c in inventory.load(self.folder, stage):
+            pub = {k: c.get(k) for k in ("id", "title", "title_custom", "listing", "source", "ebay", "added_at",
+                                         "sold_at")}
+            pub["info"] = {k: c["info"].get(k) for k in ("subject", "year", "set_name", "card_number", "team",
+                                                          "condition", "graded", "grader", "grade", "rookie")}
+            pub["errors"] = c.get("errors", [])
+            pub["relisted"] = len(c.get("listings") or [])
+            pub["front"] = f"/inv/{stage}/{c['id']}/front.jpg" if c.get("front") else None
+            pub["back"] = f"/inv/{stage}/{c['id']}/back.jpg" if c.get("back") else None
+            cards.append(pub)
+        with self._job_lock:
+            job = dict(self.job) if self.job else None
+        return {"stage": stage, "cards": cards, "counts": inventory.counts(self.folder), "max_len": MAX_LEN,
+                "ebay": self.ebay_status() if stage == "inventory" else None, "job": job}
+
+    def inventory_action(self, body: dict) -> dict:
+        from . import inventory
+
+        action, ids = body.get("action"), [str(i) for i in body.get("ids") or []]
+        stage = "listed" if action in ("sold", "back") else "inventory"
+        try:
+            if action == "update":
+                inventory.update(self.folder, body.get("cards") or [])
+            elif action == "bulk":
+                inventory.bulk(self.folder, ids, body.get("listing") or {})
+            elif action == "stagger":
+                inventory.stagger(self.folder, ids, body.get("first_start"), body.get("interval_minutes"))
+            elif action == "clear_start":
+                inventory.clear_start_times(self.folder, ids)
+            elif action == "sold":
+                inventory.mark_sold(self.folder, ids)
+            elif action == "back":
+                inventory.back_to_inventory(self.folder, ids)
+            elif action == "list":
+                self.start_listing(ids, bool(body.get("dry_run")))
+            else:
+                return {**self.inventory_payload(stage), "error": f"unknown action {action}"}
+        except inventory.InventoryError as e:
+            return {**self.inventory_payload(stage), "error": str(e)}
+        return self.inventory_payload(stage)
+
+    def start_listing(self, ids: list[str], dry_run: bool) -> None:
+        from . import inventory
+
+        with self._job_lock:
+            if self.job and self.job.get("running"):
+                raise inventory.InventoryError("A listing run is already going; wait for it to finish.")
+            self.job = {"running": True, "dry_run": dry_run, "done": 0, "total": len(ids), "log": [],
+                        "error": None, "finished": None}
+        threading.Thread(target=self._run_listing, args=(ids, dry_run), daemon=True).start()
+
+    def _run_listing(self, ids: list[str], dry_run: bool) -> None:
+        from .config import EbaySettings
+        from .listing import list_cards
+
+        def log(msg):
+            with self._job_lock:
+                self.job["log"] = (self.job["log"] + [msg])[-200:]
+
+        def on_card(done, total):
+            with self._job_lock:
+                self.job.update(done=done, total=total)
+
+        try:
+            client = None
+            if dry_run and not EbaySettings.has_keys():
+                settings = EbaySettings.offline()
+                log("No eBay keys yet: preview uses placeholder policies.")
+            else:
+                from .ebay_api import EbayClient, NotSignedIn
+
+                settings = EbaySettings.load()
+                client = EbayClient(settings)
+                if dry_run:
+                    try:
+                        client.access_token()
+                    except NotSignedIn:
+                        client = None
+            list_cards(self.folder, ids, settings, client, dry_run=dry_run, progress=log, on_card=on_card)
+        except (SystemExit, Exception) as e:  # noqa: BLE001 - reported on the page
+            with self._job_lock:
+                self.job["error"] = str(e)
+        finally:
+            with self._job_lock:
+                self.job["running"] = False
+                self.job["finished"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def costs_html(self) -> bytes:
         from .costs import ledger_path, money, summary
@@ -543,6 +663,23 @@ class ReviewServer:
                     html = resources.files("lister").joinpath("static/settings.html").read_text()
                     return self._send(200, html.replace("{{NAV}}", nav_html("settings")).encode(),
                                       "text/html; charset=utf-8")
+                path_only = self.path.split("?")[0]
+                if server.hub and path_only in ("/inventory", "/listed"):
+                    html = resources.files("lister").joinpath("static/inventory.html").read_text()
+                    html = html.replace("{{NAV}}", nav_html(path_only[1:])).replace("{{STAGE}}", path_only[1:])
+                    return self._send(200, html.encode(), "text/html; charset=utf-8")
+                if server.hub and path_only == "/api/inventory":
+                    stage = "listed" if "stage=listed" in self.path else "sold" if "stage=sold" in self.path \
+                        else "inventory"
+                    return self._json(server.inventory_payload(stage))
+                if server.hub and path_only.startswith("/inv/"):
+                    from . import inventory
+
+                    parts = unquote(path_only).split("/")  # ['', 'inv', stage, id, file]
+                    f = inventory.image(server.folder, *parts[2:5]) if len(parts) == 5 else None
+                    if f is not None:
+                        return self._send(200, f.read_bytes(), "image/jpeg")
+                    return self._send(404, b"not found", "text/plain")
                 if server.hub and self.path.split("?")[0] == "/costs":
                     return self._send(200, server.costs_html(), "text/html; charset=utf-8")
                 if server.hub and self.path.split("?")[0] == "/api/settings":
@@ -581,6 +718,8 @@ class ReviewServer:
                     return self._send(400, b"bad json", "text/plain")
                 if server.hub and self.path.split("?")[0] == "/api/settings":
                     return self._json(server.update_settings(body if isinstance(body, dict) else {}))
+                if server.hub and self.path.split("?")[0] == "/api/inventory":
+                    return self._json(server.inventory_action(body if isinstance(body, dict) else {}))
                 batch, sub = server._resolve(self.path)
                 if batch is None or sub != "/api/state":
                     return self._send(404, b"not found", "text/plain")
