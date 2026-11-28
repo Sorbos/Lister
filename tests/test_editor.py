@@ -157,3 +157,21 @@ def test_api_key_setting(tmp_path, monkeypatch):
     orient.save_settings({"anthropic_api_key": "sk-ant-x"})
     assert orient.api_key() == "sk-ant-x"
     assert (tmp_path / "Lister" / "scan-editor.json").exists()
+
+
+def test_real_green_card_recovered_from_its_back(tmp_path):
+    """Alifabolaget scans: Ola Edlund's teal-green card blends into the green backdrop on the front
+    scan; its back scan shows where it is, so it's cut out there and fitted to its edges."""
+    shutil.copy(SAMPLES / "fronts_02.jpg", tmp_path / "IMG_20261120_0001.jpg")
+    shutil.copy(SAMPLES / "backs_02.jpg", tmp_path / "IMG_20261120_0002.jpg")
+    fronts, backs = process_folder(tmp_path)
+    assert len(fronts.outputs) == 9 and fronts.recovered == 1 and len(backs.outputs) == 9
+    ola = load(tmp_path / "IMG_20261120_0001_scan6.jpg")
+    neighbour = load(tmp_path / "IMG_20261120_0001_scan5.jpg")
+    # Same card size as its neighbours (fitted to the real card, not a rough guess)…
+    assert abs(ola.shape[0] - neighbour.shape[0]) < 0.05 * neighbour.shape[0]
+    assert abs(ola.shape[1] - neighbour.shape[1]) < 0.05 * neighbour.shape[1]
+    # …and the crop's corners are backdrop, so all four card corners are inside the image.
+    green = load(tmp_path / "IMG_20261120_0001.jpg")[20, 20].astype(int)
+    for y, x in ((3, 3), (3, -4), (-4, 3), (-4, -4)):
+        assert np.abs(ola[y, x].astype(int) - green).max() < 60
