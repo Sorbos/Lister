@@ -52,7 +52,9 @@ class Watcher:
         self.done, self.problems = self.root / "done", self.root / "problems"
         for d in (self.inbox, self.batches, self.done, self.problems):
             d.mkdir(parents=True, exist_ok=True)
-        self.client, self.model = client, model or DEFAULT_MODEL
+        import os
+
+        self.client, self.model = client, model or os.environ.get("LISTER_MODEL") or DEFAULT_MODEL
         self.auto_identify, self.pair_timeout, self.settle = auto_identify, pair_timeout, settle
         self.clock, self.progress = clock, progress
         self.identify = identify or identify_batch
@@ -188,17 +190,26 @@ class Watcher:
             job = (self.pool.submit if self.pool else _run_now)(self._identify, folder, note)
             self.jobs.append(job)
         else:
-            _status(folder, "ready", note)
+            why = "not read by Claude (no Anthropic API key)" if self.client is None else "not read by Claude"
+            _status(folder, "ready", f"{note}; {why}".strip("; "))
         return folder
 
     def _identify(self, folder: Path, note: str) -> None:
         try:
             kw = {"client": self.client} if self.client is not None else {}
             results = self.identify(folder, model=self.model, progress=lambda m: None, **kw)
-            failed = sum(1 for r in results if r.get("error"))
-            msg = note + (f"; {failed} card(s) couldn't be read" if failed else "")
-            _status(folder, "ready", msg.strip("; "))
-            self.progress(f"Batch {folder.name}: cards read, ready to review")
+            errors = [r["error"] for r in results if r.get("error")]
+            if not errors:
+                _status(folder, "ready", note)
+                self.progress(f"Batch {folder.name}: cards read, ready to review")
+                return
+            why = explain_error(errors[0])
+            if len(errors) == len(results):
+                _status(folder, "error", f"Claude couldn't read the cards: {why}")
+                self.progress(f"Batch {folder.name}: Claude couldn't read the cards: {why}")
+            else:
+                _status(folder, "ready", f"{note}; {len(errors)} card(s) couldn't be read: {why}".strip("; "))
+                self.progress(f"Batch {folder.name}: {len(errors)} card(s) couldn't be read: {why}")
         except Exception as e:  # e.g. no API key, no internet: batch is still reviewable by hand
             _status(folder, "error", f"couldn't read cards ({e}); fill in by hand or try again")
             self.progress(f"Batch {folder.name}: couldn't read cards: {e}")
@@ -212,6 +223,23 @@ class Watcher:
             except Exception as e:  # keep watching whatever happens to one scan
                 self.progress(f"error: {e}")
             stop.wait(interval)
+
+
+def explain_error(err: str) -> str:
+    """Turn an API error into something actionable."""
+    e = str(err)
+    low = e.lower()
+    if "401" in e or "authentication" in low or "api key" in low or "x-api-key" in low:
+        return "the Anthropic API key was rejected; check ANTHROPIC_API_KEY in your .env file"
+    if "credit balance" in low or "billing" in low:
+        return "your Anthropic account is out of credit (Console > Plans & Billing)"
+    if "404" in e and "model" in low:
+        return "your Anthropic account can't use this model; try LISTER_MODEL=claude-sonnet-5-5 in .env"
+    if "429" in e or "rate limit" in low:
+        return "Anthropic rate limit reached; wait a minute and run lister identify on the batch"
+    if "connection" in low or "timed out" in low:
+        return "couldn't reach Anthropic (internet connection?)"
+    return e[:300]
 
 
 def _run_now(fn, *args):

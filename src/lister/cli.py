@@ -30,12 +30,31 @@ def cmd_split(args: argparse.Namespace) -> int:
 
 
 def cmd_identify(args: argparse.Namespace) -> int:
+    import os
+
+    from .config import load_dotenv
+    from .watcher import explain_error
+
+    load_dotenv()  # .env in the current folder…
+    folder = Path(args.folder).resolve()
+    if not args.folder or not (folder / "manifest.json").exists():
+        print(f"error: {args.folder or '(no folder given)'} isn't a batch folder (no manifest.json). "
+              "Give the folder `lister split` wrote, or a folder under <Lister>/batches.", file=sys.stderr)
+        return 1
+    load_dotenv(folder.parent.parent / ".env")  # …or the Lister folder (ROOT/batches/<batch>)
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        print(f"error: no ANTHROPIC_API_KEY. Put it in {folder.parent.parent / '.env'} or the current folder's .env",
+              file=sys.stderr)
+        return 1
     from .identify import DEFAULT_EFFORT, DEFAULT_MODEL, identify_batch
 
-    results = identify_batch(args.folder, model=args.model or DEFAULT_MODEL, effort=args.effort or DEFAULT_EFFORT)
-    failed = sum(1 for r in results if r["error"])
-    print(f"Identified {len(results) - failed}/{len(results)} cards → {Path(args.folder) / 'cards.json'}")
-    return 1 if failed else 0
+    results = identify_batch(folder, model=args.model or os.environ.get("LISTER_MODEL") or DEFAULT_MODEL,
+                             effort=args.effort or DEFAULT_EFFORT)
+    errors = [r["error"] for r in results if r["error"]]
+    print(f"Identified {len(results) - len(errors)}/{len(results)} cards → {folder / 'cards.json'}")
+    if errors:
+        print(f"Why: {explain_error(errors[0])}", file=sys.stderr)
+    return 1 if errors else 0
 
 
 def cmd_review(args: argparse.Namespace) -> int:

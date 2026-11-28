@@ -120,3 +120,19 @@ def test_costs_reported_in_dollars(tmp_path, capsys):
 def test_usage_when_nothing_recorded(capsys):
     assert main(["usage"]) == 0
     assert "No Claude calls recorded yet." in capsys.readouterr().out
+
+
+def test_identify_wrong_folder_is_a_message_not_a_crash(tmp_path, capsys):
+    assert main(["identify", ""]) == 1
+    assert main(["identify", str(tmp_path / "nope")]) == 1
+    assert "isn't a batch folder" in capsys.readouterr().err
+
+
+def test_identify_without_key_says_where_to_put_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.chdir(tmp_path)
+    batch = tmp_path / "root" / "batches" / "b1"
+    assert main(["split", str(SAMPLES / "fronts_01.jpg"), "-o", str(batch)]) == 0
+    assert main(["identify", str(batch)]) == 1
+    assert str(tmp_path / "root" / ".env") in capsys.readouterr().err

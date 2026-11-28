@@ -268,3 +268,27 @@ def test_watch_without_anthropic_key_says_so(tmp_path, monkeypatch, capsys):
     assert main(["watch", "--root", str(tmp_path / "L"), "--port", "0", "--no-browser"]) == 0
     out = capsys.readouterr().out
     assert "No Anthropic API key found" in out and str(tmp_path / "L" / ".env") in out
+
+
+def test_reason_shown_when_claude_cannot_read(tmp_path):
+    from lister.watcher import explain_error
+
+    def all_fail(folder, **_):
+        return [{"error": "Error code: 401 - {'type': 'authentication_error', 'message': 'invalid x-api-key'}"}] * 9
+
+    w = Watcher(tmp_path / "L", client=object(), clock=Clock(), progress=lambda *_: None, identify=all_fail,
+                background=False)
+    drop(w, SAMPLES / "fronts_01.jpg", "IMG_1.jpg")
+    w.make_batch(w.inbox / "IMG_1.jpg", None)
+    st = json.loads((w.batches / batches(w)[0] / "status.json").read_text())
+    assert st["stage"] == "error" and "API key was rejected" in st["message"]
+    assert "model" in explain_error("Error code: 404 - {'type': 'not_found_error', 'message': 'model: claude-x'}")
+    assert "credit" in explain_error("Your credit balance is too low")
+
+
+def test_no_key_batch_says_not_read(tmp_path):
+    w, clock, _ = make(tmp_path, auto_identify=False)
+    drop(w, SAMPLES / "fronts_01.jpg", "IMG_1.jpg")
+    w.make_batch(w.inbox / "IMG_1.jpg", None)
+    st = json.loads((w.batches / batches(w)[0] / "status.json").read_text())
+    assert "no Anthropic API key" in st["message"]
