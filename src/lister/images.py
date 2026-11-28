@@ -33,18 +33,35 @@ class DetectionError(RuntimeError):
     pass
 
 
+COLOURED_BACKDROP = 10  # backdrop chroma (Lab a/b distance from grey) above which we judge by its colour
+
+
 def _background_mask(img: np.ndarray) -> np.ndarray:
-    """Return a uint8 mask, 255 where the pixel is NOT background."""
-    lab = cv2.cvtColor(cv2.GaussianBlur(img, (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+    """Return a uint8 mask, 255 where the pixel is NOT background.
+
+    With a coloured backdrop (like a green sheet) a pixel is background only if it has the backdrop's
+    colour: grey, black and white areas of a card never count, which matters for black-and-white
+    photos printed to the card's edge. With a grey/black/white backdrop, it falls back to "how
+    different from the backdrop is this pixel", with an automatic threshold.
+    """
+    lab = cv2.cvtColor(cv2.GaussianBlur(img, (7, 7), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
     h, w = lab.shape[:2]
     b = max(5, min(h, w) // 100)
     border = np.concatenate(
         [lab[:b].reshape(-1, 3), lab[-b:].reshape(-1, 3), lab[:, :b].reshape(-1, 3), lab[:, -b:].reshape(-1, 3)]
     )
     bg = np.median(border, axis=0)
-    dist = np.linalg.norm(lab - bg, axis=2)
-    dist8 = np.clip(dist, 0, 255).astype(np.uint8)
-    _, mask = cv2.threshold(dist8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    bg_ab = bg[1:] - 128
+    chroma = float(np.linalg.norm(bg_ab))
+    if chroma >= COLOURED_BACKDROP:
+        d_ab = np.linalg.norm(lab[..., 1:] - 128 - bg_ab, axis=2)
+        d_l = np.abs(lab[..., 0] - bg[0])
+        is_bg = (d_ab < max(8.0, 0.45 * chroma)) & (d_l < 45)
+        mask = np.where(is_bg, 0, 255).astype(np.uint8)
+    else:
+        dist = np.linalg.norm(lab - bg, axis=2)
+        dist8 = np.clip(dist, 0, 255).astype(np.uint8)
+        _, mask = cv2.threshold(dist8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     k = max(3, min(h, w) // 300) | 1
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)  # drop specks / dust
@@ -219,3 +236,114 @@ def rotate_file(path: str | Path, degrees_clockwise: int) -> None:
     rot = turns.get(int(degrees_clockwise) % 360)
     if rot is not None:
         save(cv2.rotate(load(path), rot), path)
+
+
+def _edge_map(img: np.ndarray) -> np.ndarray:
+    gray = cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (5, 5), 0).astype(np.float32)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    return cv2.magnitude(gx, gy)
+
+
+def _perimeter_score(edges: np.ndarray, center, size, angle: float) -> float:
+    """How strongly the image has edges along this rectangle's outline."""
+    pts = cv2.boxPoints((tuple(center), tuple(size), angle))
+    samples = []
+    for k in range(4):
+        a, b = pts[k], pts[(k + 1) % 4]
+        t = np.linspace(0.08, 0.92, 40)[:, None]  # skip the corners themselves
+        samples.append(a + (b - a) * t)
+    xy = np.concatenate(samples).round().astype(int)
+    h, w = edges.shape
+    ok = (xy[:, 0] >= 0) & (xy[:, 0] < w) & (xy[:, 1] >= 0) & (xy[:, 1] < h)
+    if ok.mean() < 0.9:
+        return 0.0
+    return float(edges[xy[ok, 1], xy[ok, 0]].mean())
+
+
+def _refine_rect(edges: np.ndarray, center, size, angle: float, reach: float) -> tuple:
+    """Nudge a rectangle (position ±reach px, angle ±4°) to sit on the card's real edges."""
+    best = (_perimeter_score(edges, center, size, angle), tuple(center), angle)
+    for step, span, astep, aspan in ((reach / 8, reach, 1.0, 4.0), (2.0, reach / 8, 0.25, 1.0)):
+        cx, cy = best[1]
+        a0 = best[2]
+        for dx in np.arange(-span, span + 0.1, step):
+            for dy in np.arange(-span, span + 0.1, step):
+                for da in np.arange(-aspan, aspan + 0.01, astep):
+                    sc = _perimeter_score(edges, (cx + dx, cy + dy), size, a0 + da)
+                    if sc > best[0]:
+                        best = (sc, (cx + dx, cy + dy), a0 + da)
+    return best[1], best[2]
+
+
+def match_cards(mine: list[Card], partner: list[Card]) -> tuple[set[int], np.ndarray]:
+    """Pair cards of two scans of the same sheet one-to-one, closest pairs first.
+
+    Returns (indexes of partner cards that have a counterpart in `mine`, the whole-sheet shift from
+    partner to mine). Cards can move a few mm when flipped; neighbouring cards are several cm apart,
+    and a counterpart must also be about the same size.
+    """
+    if not mine or not partner:
+        return set(), np.zeros(2)
+    a = np.array([c.center for c in mine])
+    b = np.array([c.center for c in partner])
+    shift = np.median([a[np.argmin(np.linalg.norm(a - p, axis=1))] - p for p in b], axis=0)
+    if np.linalg.norm(shift) > 0.5 * min(partner[0].size):
+        shift = np.zeros(2)  # sheets don't line up: don't trust it
+    targets = b + shift
+    limit = 0.6 * min(min(c.size) for c in partner)
+    pairs = sorted((float(np.linalg.norm(m - t)), i, j) for i, m in enumerate(a) for j, t in enumerate(targets))
+    used, matched = set(), set()
+    for dist, i, j in pairs:
+        if dist > limit:
+            break
+        if i in used or j in matched:
+            continue
+        (wa, ha), (wb, hb) = sorted(mine[i].size), sorted(partner[j].size)
+        if abs(wa - wb) > 0.08 * wb or abs(ha - hb) > 0.08 * hb:
+            continue  # different card shape here
+        used.add(i)
+        matched.add(j)
+    return matched, shift
+
+
+def recover_from_partner(img: np.ndarray, cards: list[Card], partner: list[Card],
+                         margin_frac: float = 0.03) -> tuple[list[Card], int]:
+    """Cut out cards this scan missed, using where they are in its partner scan (front ↔ back).
+
+    Cards are flipped where they lie, so a card found in one scan is in the same spot in the other
+    (allowing for the whole sheet shifting a little). A spot is only used if something that isn't
+    backdrop is actually there. Returns (cards in reading order, number recovered).
+    """
+    if len(partner) <= len(cards):
+        return cards, 0
+    matched, shift = match_cards(cards, partner)
+    targets = np.array([c.center for c in partner]) + shift
+    mask = _background_mask(img)
+    found = [(c.center, c.size, c.angle, c.corners) for c in cards]
+    added = 0
+    for j, p in enumerate(partner):
+        if j in matched:
+            continue  # this scan has it already
+        target = targets[j]
+        corners = (p.corners + shift).astype(np.float32)
+        region = np.zeros(mask.shape, np.uint8)
+        cv2.fillConvexPoly(region, corners.astype(np.int32), 255)
+        inside = cv2.countNonZero(region)
+        if not inside or cv2.countNonZero(cv2.bitwise_and(mask, region)) / inside < 0.2:
+            continue  # nothing but backdrop there
+        # The card may have moved a little when flipped: fit the outline to its real edges.
+        if "edges" not in locals():
+            edges = _edge_map(img)
+        (w_, h_) = p.size
+        center, angle = _refine_rect(edges, target, (w_, h_), p.angle, reach=0.2 * min(p.size))
+        corners = _order_corners(cv2.boxPoints((center, (w_, h_), angle)))
+        found.append((tuple(center), p.size, angle, corners))
+        added += 1
+    if not added:
+        return cards, 0
+    order = _reading_order([f[0] for f in found], [f[1][1] for f in found])
+    out = [Card(index=n, center=found[i][0], size=found[i][1], angle=found[i][2], corners=found[i][3],
+                image=_warp(img, found[i][3], margin_frac))
+           for n, i in enumerate(order, start=1)]
+    return out, added

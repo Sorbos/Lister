@@ -1,0 +1,73 @@
+name: Build Lister Scan Editor (Windows)
+
+# Builds ListerScanEditor.exe on a Windows machine, checks the finished .exe really edits scans,
+# and publishes it to the "scan-editor-latest" release for download.
+on:
+  push:
+    branches: [main, claude/ebay-memorabilia-automation-d25668]
+    paths:
+      - "src/lister/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - ".github/workflows/scan-editor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]" pyinstaller==6.11.1
+
+      - name: Tests (on Windows)
+        run: python -m pytest -q tests/test_editor.py tests/test_images.py tests/test_windows_compat.py
+
+      - name: Build the .exe
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name ListerScanEditor
+          --icon packaging/scan-editor.ico
+          --collect-submodules lister
+          packaging/scan_editor.py
+
+      - name: Check the finished .exe edits scans
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "self test"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item samples/fronts_01.jpg (Join-Path $dir "IMG_0045.jpg")
+          Copy-Item samples/backs_01.jpg (Join-Path $dir "IMG_0046.jpg")
+          $p = Start-Process -FilePath dist/ListerScanEditor.exe -ArgumentList "--self-test", "`"$dir`"" -Wait -PassThru
+          Get-Content (Join-Path $dir "self-test.txt")
+          $made = (Get-ChildItem $dir -Filter "*_scan*.jpg").Count
+          Write-Host "exit code $($p.ExitCode), $made card images"
+          if ($p.ExitCode -ne 0 -or $made -ne 18) { throw "self-test failed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ListerScanEditor
+          path: dist/ListerScanEditor.exe
+
+      - name: Publish to the scan-editor-latest release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Latest build of Lister Scan Editor (commit ${GITHUB_SHA::7}). Download ListerScanEditor.exe below."
+          if gh release view scan-editor-latest >/dev/null 2>&1; then
+            gh release edit scan-editor-latest --notes "$notes" --target "$GITHUB_SHA"
+          else
+            gh release create scan-editor-latest --prerelease --title "Lister Scan Editor" --notes "$notes" --target "$GITHUB_SHA"
+          fi
+          gh release upload scan-editor-latest dist/ListerScanEditor.exe --clobber

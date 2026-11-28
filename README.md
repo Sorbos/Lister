@@ -3,6 +3,39 @@
 Turn trading-card scans (9 cards at a time) into individual, straightened card photos, and, soon,
 into eBay listings. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
+## Lister Scan Editor (desktop program)
+
+Turns a folder of 9-up scans into one straightened, cropped image per card, with all four
+corners visible.
+
+**Get it:** download **ListerScanEditor.exe** from the
+[Lister Scan Editor release](https://github.com/Sorbos/Lister/releases/tag/scan-editor-latest)
+(built automatically on Windows). Nothing else needs installing. Windows may warn that it's from
+an unknown publisher: click **More info → Run anyway**. On first start it offers to put a
+**Lister Scan Editor** icon on your desktop.
+
+**Use it:**
+1. **Choose folder…** and pick the folder with your scans.
+2. **Edit scans.** Each scan's cards are saved next to it, in the same folder:
+   `IMG_20261122_0067.jpg` → `IMG_20261122_0067_scan1.jpg`, `_scan2.jpg` … numbered row by
+   row, left to right. Your scans themselves are never changed.
+3. Check the cards below. Turn any that are wrong with **Left / Right**, or tick several (click
+   a card) and use **Turn selected left/right**. Then **Save turns**.
+
+- **Fronts and backs:** when a scan is followed by the back scan of the same cards (each card
+  flipped where it lay), they're recognised as a pair, so `_scan3` of the front scan and
+  `_scan3` of the back scan are the same card. A card one scan misses (e.g. a green card on the
+  green backdrop) is cut out at the spot where the other scan has it.
+- **Already done?** Scans that already have `_scan` images are skipped; tick **Redo scans that
+  are already done** to make them again.
+- **Turn cards upright with AI (optional):** click **AI key…**, paste an Anthropic API key, and
+  tick the option. Each scan's cards are checked in one request to a small, low-cost Claude
+  model (fronts by their picture, backs by their text), typically well under a cent per scan.
+  Without a key everything else works the same; cards just stay the way they lay. The key is
+  saved only on that computer (`%APPDATA%\Lister\scan-editor.json`).
+
+From Python instead: `pip install -e .` then `lister-scan-editor`.
+
 ## Try it on Windows (no eBay account needed)
 
 1. Install **Python 3.11 or newer** from <https://www.python.org/downloads/>. In the installer,
