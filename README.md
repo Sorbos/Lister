@@ -164,7 +164,7 @@ read-only. Edits are saved as you go, so you can stop and come back.
   It's sent to eBay as an override of the first domestic service in your shipping policy, so that
   service needs to be flat-rate.
 - **Delete** removes the selected cards from the inventory after a confirmation. They're moved to
-  `C:\\Lister\\deleted\\`, not erased, so a mistake can be undone in File Explorer.
+  `C:\Lister\deleted\`, not erased, so a mistake can be undone in File Explorer.
 - Problems show under each card and block listing (no price, title over 80 characters, Buy It
   Now less than 30% above the start, a start time in the past or more than 3 weeks ahead).
 - **Preview** shows exactly what would be sent to eBay; **List on eBay** lists the selected
