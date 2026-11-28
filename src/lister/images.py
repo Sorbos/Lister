@@ -200,3 +200,11 @@ def write_batch(fronts: list[Card], backs: list[Card] | None, out: str | Path, s
         manifest.append(entry)
     (out / "manifest.json").write_text(json.dumps({"source": source, "cards": manifest}, indent=2))
     return manifest
+
+
+def rotate_file(path: str | Path, degrees_clockwise: int) -> None:
+    """Turn an image file in place by a multiple of 90°."""
+    turns = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+    rot = turns.get(int(degrees_clockwise) % 360)
+    if rot is not None:
+        save(cv2.rotate(load(path), rot), path)

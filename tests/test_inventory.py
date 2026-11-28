@@ -42,7 +42,7 @@ def test_batch_lands_in_inventory_only_when_finished(tmp_path):
     inv = inventory.load(root)
     assert len(inv) == 8 and b.state["finished"]["ids"] == [c["id"] for c in inv]
     c = inv[0]
-    assert c["id"] == "2026-11-28_IMG_0045-01" and c["title"] == "1990-91 Upper Deck Player 1 #1"
+    assert c["id"] == "2026-11-28_IMG_0045-01" and c["title"] == "1990-91 Upper Deck #1 Player 1"
     assert (c["_folder"] / "front.jpg").exists() and (c["_folder"] / "back.jpg").exists()
     assert c["listing"]["format"] == "auction" and c["listing"]["start_price"] == 0.99 and c["errors"] == []
     assert json.loads((root / "batches" / "2026-11-28_IMG_0045" / "status.json").read_text())["stage"] == "done"
@@ -74,7 +74,7 @@ def test_custom_title_and_auto(tmp_path):
     inventory.update(root, [{"id": cid, "title": "My title", "title_custom": True}])
     assert inventory.get(root, cid)["title"] == "My title"
     inventory.update(root, [{"id": cid, "title_custom": False}])
-    assert inventory.get(root, cid)["title"] == "1990-91 Upper Deck Player 1 #1"
+    assert inventory.get(root, cid)["title"] == "1990-91 Upper Deck #1 Player 1"
 
 
 # ---------------------------------------------------------------- the pages
@@ -160,3 +160,23 @@ def test_inventory_images_only_card_photos(hub):
     for bad in (f"inv/inventory/{cid}/card.json", f"inv/inventory/../batches/x/front.jpg", f"inv/nope/{cid}/front.jpg"):
         with pytest.raises(urllib.error.HTTPError):
             call(hub, bad)
+
+
+def test_turn_inventory_photos(hub):
+    import cv2
+
+    root = hub.folder
+    cards = inventory.load(root)
+    ids = [c["id"] for c in cards[:2]]
+    card = inventory.get(root, ids[0])
+    card["ebay"] = {"image_urls": ["https://i.ebayimg.com/old"]}  # uploaded earlier, then the run stopped
+    inventory.save(card)
+    before = cv2.imread(str(cards[0]["_folder"] / "front.jpg"))
+    d = json.loads(call(hub, "api/inventory", {"action": "rotate", "ids": ids, "side": "front", "degrees": 180}))
+    assert d["cards"][0]["front"].endswith("front.jpg?v=1") and d["cards"][2]["front"].endswith("?v=0")
+    after = cv2.imread(str(cards[0]["_folder"] / "front.jpg"))
+    assert abs(cv2.rotate(before, cv2.ROTATE_180).astype(int) - after.astype(int)).mean() < 3
+    assert "image_urls" not in inventory.get(root, ids[0])["ebay"]  # will be uploaded again
+    assert call(hub, d["cards"][0]["front"].lstrip("/"))[:2] == b"\xff\xd8"
+    bad = json.loads(call(hub, "api/inventory", {"action": "rotate", "ids": ids, "degrees": 45}))
+    assert "90, 180 or 270" in bad["error"]

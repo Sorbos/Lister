@@ -22,6 +22,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; }
 .banner { max-width: 1200px; margin: 12px auto 0; padding: 0 16px; }
 .banner > div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--muted); }
+.selbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--text) !important; }
+.selbar .sp { flex: 1; }
+.rot { display: flex; justify-content: center; gap: 4px; margin-top: 2px; }
+.rot button { padding: 2px 8px; font-size: 14px; line-height: 1.2; }
+.pick { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+.card.picked { box-shadow: 0 0 0 2px var(--accent); }
 .banner > div.done { background: var(--ok-bg); color: var(--ok); border-color: transparent; font-weight: 600; }
 .batch > summary { cursor: pointer; padding: 10px 0; font-weight: 600; font-size: 14px; }
 .batch > summary small { color: var(--muted); font-weight: 400; }
@@ -86,6 +92,7 @@ dialog::backdrop { background: rgb(0 0 0 / .75); }
   </div>
 </header>
 <div class="banner" id="banner"></div>
+<div class="banner"><div class="selbar" id="selbar"></div></div>
 <main id="cards"></main>
 <dialog id="zoom"><img alt=""></dialog>
 
@@ -102,6 +109,7 @@ const TEXT_FIELDS = [
 ];
 const CHECKS = [["rookie", "Rookie (RC)"], ["autograph", "Autograph"], ["memorabilia", "Patch / relic"], ["graded", "Graded"]];
 let state = null, maxLen = 80, timer = null, inflight = Promise.resolve();
+const picked = new Set();  // card positions ticked for "turn selected"
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const h = (tag, attrs = {}, ...kids) => {
@@ -109,7 +117,8 @@ const h = (tag, attrs = {}, ...kids) => {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") el.className = v;
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+    else if (v === true) el.setAttribute(k, "");
+    else if (v !== false && v != null) el.setAttribute(k, v);
   }
   for (const kid of kids.flat()) if (kid != null) el.append(kid);
   return el;
@@ -134,6 +143,7 @@ function merge(s) {
     const c = state.cards[i];
     c.errors = sc.errors; c.approved = sc.approved;
     if (!c.title_custom) c.title = sc.title;
+    if ((sc.img_v || 0) !== (c.img_v || 0)) { c.img_v = sc.img_v; refreshImages(i); }
   });
 }
 
@@ -145,8 +155,13 @@ function renderCards() {
 function renderCard(c, idx) {
   const unsure = new Set(c.uncertain || []);
   const set = (k, v) => { c.info[k] = v; save(); };
-  const img = (name, lbl) => name ? h("div", {}, h("img", { src: "img/" + name, alt: lbl, loading: "lazy",
-    onclick: e => { const d = $("#zoom"); $("img", d).src = e.target.src; d.showModal(); } }), h("div", { class: "lbl" }, lbl)) : null;
+  const side = lbl => lbl.toLowerCase();
+  const img = (name, lbl) => name ? h("div", {}, h("img", { src: "img/" + name + "?v=" + (c.img_v || 0), alt: lbl, loading: "lazy",
+    "data-side": side(lbl), onclick: e => { const d = $("#zoom"); $("img", d).src = e.target.src; d.showModal(); } }),
+    h("div", { class: "lbl" }, lbl),
+    h("div", { class: "rot" },
+      h("button", { title: "Turn " + side(lbl) + " left", onclick: () => rotate([c.position], side(lbl), 270) }, "⟲"),
+      h("button", { title: "Turn " + side(lbl) + " right", onclick: () => rotate([c.position], side(lbl), 90) }, "⟳"))) : null;
 
   const titleInput = h("input", { type: "text", value: c.title, "data-role": "title",
     oninput: e => { c.title = e.target.value; c.title_custom = true; refresh(); save(); } });
@@ -176,6 +191,8 @@ function renderCard(c, idx) {
     h("div", { class: "imgs" }, img(c.front, "Front"), img(c.back, "Back")),
     h("div", {},
       h("div", { class: "top" },
+        h("label", { class: "pick" }, h("input", { type: "checkbox", checked: picked.has(c.position), "data-role": "pick",
+          onchange: e => { e.target.checked ? picked.add(c.position) : picked.delete(c.position); renderSelbar(); } }), "Select"),
         h("span", { class: "pos" }, "Card " + c.position),
         c.confidence ? h("span", { class: "chip " + c.confidence }, c.confidence + " confidence") : h("span", { class: "chip" }, "not identified"),
         h("span", { class: "chip", "data-role": "status" })),
@@ -236,6 +253,46 @@ $("#approveAll").onclick = () => {
   refresh(); save(0);
 };
 
+// Turn photos: right away (not debounced), then show the new version of each image.
+async function rotate(positions, side, degrees) {
+  if (!positions.length || state.finished) return;
+  $("#summary").textContent = "Turning…";
+  try {
+    const r = await fetch("api/state", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cards: [], rotate: { positions, side, degrees } }) });
+    if (!r.ok) throw new Error(r.status);
+    merge(await r.json()); refresh();
+  } catch (e) { $("#summary").textContent = "Couldn't turn (" + e.message + ")"; }
+}
+function refreshImages(i) {
+  const c = state.cards[i], el = $(`.card[data-i="${i}"]`);
+  if (!el) return;
+  el.querySelectorAll("img[data-side]").forEach(img => {
+    const name = c[img.dataset.side];
+    if (name) img.src = "img/" + name + "?v=" + (c.img_v || 0);
+  });
+}
+function renderSelbar() {
+  const bar = $("#selbar"); if (!bar || !state) return;
+  if (state.finished) { bar.parentElement.classList.add("hide"); return; }
+  const n = picked.size, all = state.cards.length, ids = () => [...picked];
+  state.cards.forEach((c, i) => { const el = $(`.card[data-i="${i}"]`); if (el) {
+    el.classList.toggle("picked", picked.has(c.position));
+    const cb = $('[data-role="pick"]', el); if (cb) cb.checked = picked.has(c.position); } });
+  bar.replaceChildren(
+    h("label", { class: "pick", style: "color:var(--text)" },
+      h("input", { type: "checkbox", checked: n > 0 && n === all,
+        onchange: e => { picked.clear(); if (e.target.checked) state.cards.forEach(c => picked.add(c.position)); renderSelbar(); } }),
+      n ? `${n} selected` : "Select cards to turn several at once"),
+    h("span", { class: "sp" }),
+    h("span", {}, "Turn fronts"),
+    h("button", { disabled: !n, title: "Turn selected fronts left", onclick: () => rotate(ids(), "front", 270) }, "⟲"),
+    h("button", { disabled: !n, title: "Turn selected fronts right", onclick: () => rotate(ids(), "front", 90) }, "⟳"),
+    h("span", {}, "backs"),
+    h("button", { disabled: !n, title: "Turn selected backs left", onclick: () => rotate(ids(), "back", 270) }, "⟲"),
+    h("button", { disabled: !n, title: "Turn selected backs right", onclick: () => rotate(ids(), "back", 90) }, "⟳"));
+}
+
 // The last approve/skip finishes the batch: its approved cards move to the inventory and it becomes read-only.
 function confirmFinish() {
   if (!state.has_inventory || !state.cards.every(c => c.approved || c.skip)) return true;
@@ -250,6 +307,7 @@ function showFinished() {
       + (f.skipped ? `, ${f.skipped} skipped` : "") + ". ",
     state.has_inventory ? h("a", { href: "/inventory", style: "color:inherit" }, "Go to the inventory to price and list them →") : null));
   document.querySelectorAll("#cards input, #cards select, #cards button, #approveAll").forEach(el => el.disabled = true);
+  renderSelbar();
 }
 $("#zoom").onclick = () => $("#zoom").close();
 
@@ -265,7 +323,7 @@ fetch("api/state").then(r => r.json()).then(s => {
   }
   $("#folder").textContent = s.folder + (c == null ? "" :
     " · Claude: " + (c >= 0.995 || c === 0 ? "$" + c.toFixed(2) : (c * 100).toFixed(1) + "¢"));
-  renderCards();
+  renderCards(); renderSelbar();
   if (s.finished) showFinished();
   else $("#banner").replaceChildren(h("div", {}, s.has_inventory
     ? "Check each card's details, then approve it (or tick “Don't list”). When every card is done, the approved ones move to the Inventory, where you set prices and list them."

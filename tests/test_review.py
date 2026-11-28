@@ -19,7 +19,7 @@ def server(tmp_path):
     info = dict(category="non_sport", year="1978", set_name="The Muppet Show", card_number="60",
                 subject="Fozzie Bear", rookie=False, autograph=False, memorabilia=False, graded=False,
                 condition="excellent", confidence="medium", uncertain_fields=["set_name"], notes="")
-    cards[0] = {**cards[0], "info": info, "title": "1978 The Muppet Show Fozzie Bear #60", "error": None}
+    cards[0] = {**cards[0], "info": info, "title": "1978 The Muppet Show #60 Fozzie Bear", "error": None}
     (tmp_path / "cards.json").write_text(json.dumps({"cards": cards}))
     srv = ReviewServer(tmp_path, port=0)
     t = threading.Thread(target=srv.httpd.serve_forever, daemon=True)
@@ -47,7 +47,7 @@ def test_page_and_state(server):
     state = json.loads(get(server, "/api/state")[1])
     assert len(state["cards"]) == 9
     c1 = state["cards"][0]
-    assert c1["title"] == "1978 The Muppet Show Fozzie Bear #60"
+    assert c1["title"] == "1978 The Muppet Show #60 Fozzie Bear"
     assert c1["uncertain"] == ["set_name"]
     assert c1["errors"] == []  # default auction at $0.99 is valid
     # Unidentified cards need a subject before they can be approved.
@@ -60,7 +60,7 @@ def test_edit_rebuilds_title_and_persists(server):
     card["info"]["rookie"] = True
     card["approved"] = True
     out = post(server, {"cards": [card]}, origin=server.url.rstrip("/"))
-    assert out["cards"][0]["title"].endswith("#60 RC")
+    assert out["cards"][0]["title"].endswith("#60 Fozzie Bear RC")
     assert out["cards"][0]["approved"] is True
     saved = json.loads((server.folder / "review.json").read_text())
     assert saved["cards"][0]["approved"] is True
@@ -128,13 +128,13 @@ def test_claude_results_fill_in_after_page_was_opened(tmp_path):
     cards = json.loads((tmp_path / "manifest.json").read_text())["cards"]
     info = dict(category="non_sport", year="1978", set_name="The Muppet Show", subject="Fozzie Bear",
                 card_number="60", condition="excellent", confidence="high", uncertain_fields=[], notes="")
-    cards = [{**c, "info": info, "title": "1978 The Muppet Show Fozzie Bear #60", "error": None} for c in cards]
+    cards = [{**c, "info": info, "title": "1978 The Muppet Show #60 Fozzie Bear", "error": None} for c in cards]
     (tmp_path / "cards.json").write_text(json.dumps({"cards": cards}))
     later = time.time() + 5
     os.utime(tmp_path / "cards.json", (later, later))
 
     state = b.payload()  # what the page loads
-    assert state["cards"][0]["title"] == "1978 The Muppet Show Fozzie Bear #60"
+    assert state["cards"][0]["title"] == "1978 The Muppet Show #60 Fozzie Bear"
     assert state["cards"][0]["confidence"] == "high"
     assert state["cards"][1]["info"]["subject"] == "My own words"  # edits kept
     # And a fresh start (e.g. restarting lister review) sees the same.
@@ -162,3 +162,22 @@ def test_finished_batch_is_read_only(server):
     cards[0]["info"]["subject"] = "Changed later"
     assert post(server, {"cards": [cards[0]]})["cards"][0]["info"]["subject"] != "Changed later"
 
+
+
+def test_turn_photos_one_or_many(server):
+    import cv2
+
+    f = server.folder
+    before = {p: cv2.imread(str(f / f"card_0{p}_front.jpg")) for p in (1, 2, 3)}
+    back1 = cv2.imread(str(f / "card_01_back.jpg"))
+    out = post(server, {"cards": [], "rotate": {"positions": [1, 2], "side": "front", "degrees": 90}})
+    assert [c.get("img_v", 0) for c in out["cards"][:3]] == [1, 1, 0]
+    for p in (1, 2):
+        now = cv2.imread(str(f / f"card_0{p}_front.jpg"))
+        assert now.shape[1] > now.shape[0]  # portrait → landscape
+        assert abs(cv2.rotate(before[p], cv2.ROTATE_90_CLOCKWISE).astype(int) - now.astype(int)).mean() < 3
+    assert (cv2.imread(str(f / "card_03_front.jpg")) == before[3]).all()  # not selected: untouched
+    post(server, {"cards": [], "rotate": {"positions": [1], "side": "back", "degrees": 270}})
+    now = cv2.imread(str(f / "card_01_back.jpg"))
+    assert abs(cv2.rotate(back1, cv2.ROTATE_90_COUNTERCLOCKWISE).astype(int) - now.astype(int)).mean() < 3
+    assert get(server, "/img/card_01_front.jpg?v=1")[0] == 200  # versioned URL still serves the photo

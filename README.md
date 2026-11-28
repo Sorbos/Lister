@@ -115,11 +115,13 @@ lister identify out/batch-001
 
 Each card's front and back go to Claude, which returns year, set, player/subject, team, card #,
 rookie/auto/patch/serial, a condition estimate, and which fields it is unsure of. Results land in
-`out/batch-001/cards.json` with a ready-made eBay title, e.g.
+`out/batch-001/cards.json` with a ready-made eBay title (year, set, number, name), e.g.
 
-    2005-06 Upper Deck Young Guns Sidney Crosby Pittsburgh Penguins #201 RC
+    2005-06 Upper Deck Young Guns #201 Sidney Crosby Pittsburgh Penguins RC
 
-Cards scanned upside down are rotated automatically. Options: `--model`, `--effort low|medium|high`
+Cards without a number get `nno` in its place: `1978 The Muppet Show nno Fozzie`.
+
+Each front is turned so its **picture** is upright (a sideways photo makes the card landscape), and each back so its text is upright. Options: `--model`, `--effort low|medium|high`
 (defaults: `claude-opus-5-5`, `medium`; also settable via `LISTER_MODEL` / `LISTER_EFFORT`).
 If Claude ever declines a card, the request automatically falls back to another model.
 
@@ -144,7 +146,8 @@ prices; the Usage and Cost pages in the Anthropic Console show the exact bill.
 **Batches: check the details.** Open a batch (from the Batches page, or `lister review FOLDER` for
 a single folder). Each card shows its front and back; fix any field (fields Claude was unsure of
 are highlighted ⚠; the title rebuilds as you type), then **Approve** it or tick **Don't list**.
-When every card is done, the approved cards are copied into the inventory and the batch becomes
+Turn a photo with the ⟲ ⟳ buttons under it, or tick **Select** on several cards and turn
+all their fronts (or backs) at once from the bar at the top. When every card is done, the approved cards are copied into the inventory and the batch becomes
 read-only. Edits are saved as you go, so you can stop and come back.
 
 **Inventory: price, schedule, list.** Every approved card from every batch, in one place

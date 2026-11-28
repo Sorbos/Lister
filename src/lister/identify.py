@@ -39,8 +39,12 @@ class CardInfo(BaseModel):
     grader: Optional[str]
     grade: Optional[str]
     condition: Condition = Field(description="Visible condition estimate for an ungraded card")
-    front_orientation: Literal["upright", "upside_down", "rotated_left", "rotated_right"] = Field(
-        description="How the FRONT image is oriented relative to how the card is meant to be read"
+    front_orientation: Literal["up", "down", "left", "right"] = Field(
+        description="Where the top of the MAIN PICTURE on the FRONT points in the image as shown (ignore caption "
+                    "text): up = already upright, left = picture's top points left, etc."
+    )
+    back_orientation: Optional[Literal["up", "down", "left", "right"]] = Field(
+        description="Where the top of the BACK's text points in the image as shown. Null if no back or it's blank."
     )
     confidence: Literal["high", "medium", "low"]
     uncertain_fields: list[str] = Field(description="Names of fields you are not sure about")
@@ -60,7 +64,10 @@ Rules:
 - card_number: exactly as printed (e.g. "60", "201", "YG-12"), without a '#'.
 - rookie: only when the card is a recognised rookie card.
 - condition: judge corners, edges, surface and centering from the images; be conservative.
-- A blank back is normal for some vintage and non-sport cards; say so in notes only if relevant."""
+- A blank back is normal for some vintage and non-sport cards; say so in notes only if relevant.
+- front_orientation follows the main PICTURE, not the text: some cards print the photo sideways or
+  upside down relative to the caption, and the seller wants the picture upright (a sideways photo
+  makes the card landscape). back_orientation follows the back's text."""
 
 
 def _image_block(path: Path) -> dict:
@@ -124,7 +131,6 @@ def identify_batch(
 ) -> list[dict]:
     """Identify every card in a `lister split` output folder; writes cards.json there."""
     from .costs import money, record
-    from .images import load, save  # local import keeps this module light for tests
     from .title import build_title
 
     folder = Path(folder)
@@ -158,7 +164,9 @@ def identify_batch(
             results.append({**entry, "info": None, "title": None, "error": str(e), "cost_usd": usd})
             continue
         tally(served, usd, entry["position"])
-        _fix_orientation(front, info.front_orientation, load, save)
+        _fix_orientation(front, info.front_orientation)
+        if back is not None and info.back_orientation:
+            _fix_orientation(back, info.back_orientation)
         title = build_title(info)
         progress(f"Card {entry['position']}: {title}  [{info.confidence}, {money(usd)}]")
         results.append({**entry, "info": info.model_dump(), "title": title, "error": None, "cost_usd": usd})
@@ -176,13 +184,11 @@ def identify_batch(
     return results
 
 
-def _fix_orientation(path: Path, orientation: str, load, save) -> None:
-    import cv2
+# Where the top points → degrees to turn clockwise to make it upright.
+TURN_FOR = {"up": 0, "left": 90, "down": 180, "right": 270}
 
-    rot = {
-        "upside_down": cv2.ROTATE_180,
-        "rotated_left": cv2.ROTATE_90_CLOCKWISE,
-        "rotated_right": cv2.ROTATE_90_COUNTERCLOCKWISE,
-    }.get(orientation)
-    if rot is not None:
-        save(cv2.rotate(load(path), rot), path)
+
+def _fix_orientation(path: Path, orientation: str) -> None:
+    from .images import rotate_file
+
+    rotate_file(path, TURN_FOR.get(orientation, 0))

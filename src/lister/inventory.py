@@ -100,6 +100,11 @@ def load(root: Path, stage: str = "inventory", now: datetime | None = None) -> l
                 continue
             card["_stage"], card["_folder"] = stage, f
             if stage == "inventory":
+                if not card.get("title_custom"):
+                    auto = build_title(card["info"])
+                    if auto != card.get("title"):  # e.g. after a change to the title format
+                        card["title"] = auto
+                        save(card)
                 card["errors"] = errors(card, now)
             out.append(card)
     return sorted(out, key=lambda c: (c.get("added_at", ""), c["id"]))
@@ -189,6 +194,23 @@ def clear_start_times(root: Path, ids: list[str]) -> None:
     for card_id in ids:
         card = get(root, card_id, "inventory")
         card["listing"]["start_time"] = None
+        save(card)
+
+
+def rotate(root: Path, ids: list[str], side: str = "front", degrees: int = 90) -> None:
+    """Turn cards' front (or back) photos clockwise by 90/180/270°."""
+    from .images import rotate_file
+
+    if side not in ("front", "back") or int(degrees) % 360 not in (90, 180, 270):
+        raise InventoryError("Rotate by 90, 180 or 270 degrees, front or back")
+    for card_id in ids:
+        card = get(root, card_id, "inventory")
+        if not card.get(side):
+            continue
+        rotate_file(card["_folder"] / card[side], int(degrees))
+        card["img_v"] = card.get("img_v", 0) + 1
+        if card.get("ebay"):
+            card["ebay"].pop("image_urls", None)  # photos changed: upload them again
         save(card)
 
 

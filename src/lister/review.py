@@ -252,10 +252,24 @@ class BatchState:
         tmp.write_text(json.dumps(self.state, indent=2))
         tmp.replace(self.path)
 
+    def _rotate(self, req: dict) -> None:
+        """{"positions": [...], "side": "front"|"back", "degrees": 90|180|270} — turn photos clockwise."""
+        from .images import rotate_file
+
+        side = req.get("side") if req.get("side") in ("front", "back") else "front"
+        degrees = int(req.get("degrees") or 0) % 360
+        wanted = {int(p) for p in req.get("positions") or []}
+        for card in self.state["cards"]:
+            if card["position"] in wanted and card.get(side) and degrees in (90, 180, 270):
+                rotate_file(self.folder / card[side], degrees)
+                card["img_v"] = card.get("img_v", 0) + 1
+
     def update(self, new_state: dict) -> dict:
         with self.lock:
             if self.state.get("finished"):
                 return self.state  # read-only once its cards are in the inventory
+            if new_state.get("rotate"):
+                self._rotate(new_state["rotate"])
             # Only accept edits to known cards; image paths can't be changed from the page.
             by_pos = {c["position"]: c for c in self.state["cards"]}
             for incoming in new_state.get("cards", []):
@@ -494,8 +508,9 @@ class ReviewServer:
                                                           "condition", "graded", "grader", "grade", "rookie")}
             pub["errors"] = c.get("errors", [])
             pub["relisted"] = len(c.get("listings") or [])
-            pub["front"] = f"/inv/{stage}/{c['id']}/front.jpg" if c.get("front") else None
-            pub["back"] = f"/inv/{stage}/{c['id']}/back.jpg" if c.get("back") else None
+            v = c.get("img_v", 0)
+            pub["front"] = f"/inv/{stage}/{c['id']}/front.jpg?v={v}" if c.get("front") else None
+            pub["back"] = f"/inv/{stage}/{c['id']}/back.jpg?v={v}" if c.get("back") else None
             cards.append(pub)
         with self._job_lock:
             job = dict(self.job) if self.job else None
@@ -514,6 +529,8 @@ class ReviewServer:
                 inventory.bulk(self.folder, ids, body.get("listing") or {})
             elif action == "stagger":
                 inventory.stagger(self.folder, ids, body.get("first_start"), body.get("interval_minutes"))
+            elif action == "rotate":
+                inventory.rotate(self.folder, ids, body.get("side", "front"), body.get("degrees", 90))
             elif action == "clear_start":
                 inventory.clear_start_times(self.folder, ids)
             elif action == "sold":

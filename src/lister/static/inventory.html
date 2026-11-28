@@ -49,6 +49,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .card input[type=checkbox] { width: 20px; height: 20px; margin-top: 4px; }
 .imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 .imgs img { width: 100%; border-radius: 3px; cursor: zoom-in; background: var(--line); }
+.rot { display: flex; justify-content: center; gap: 4px; margin-top: 2px; }
+.rot button, .turn button { padding: 2px 8px; font-size: 14px; line-height: 1.2; }
+.turn { display: inline-flex; gap: 4px; align-items: center; font-size: 13px; color: var(--muted); }
 .title-row { display: flex; gap: 6px; align-items: center; }
 .title-row input { font-weight: 600; }
 .count { font-size: 12px; color: var(--muted); min-width: 42px; text-align: right; }
@@ -170,9 +173,12 @@ function renderCard(card) {
   const isInv = STAGE === "inventory";
   const check = h("input", { type: "checkbox", checked: selected.has(card.id), "aria-label": "Select " + card.title,
     onchange: e => { e.target.checked ? selected.add(card.id) : selected.delete(card.id); el.classList.toggle("sel", e.target.checked); renderToolbar(); } });
-  const imgs = h("div", { class: "imgs" },
-    card.front ? h("img", { src: card.front, alt: "Front", loading: "lazy", onclick: () => zoom(card.front) }) : null,
-    card.back ? h("img", { src: card.back, alt: "Back", loading: "lazy", onclick: () => zoom(card.back) }) : null);
+  const pic = (url, side) => url ? h("div", {},
+    h("img", { src: url, alt: side, loading: "lazy", onclick: () => zoom(url) }),
+    isInv ? h("div", { class: "rot" },
+      h("button", { title: `Turn ${side} left`, onclick: () => turn([card.id], side, 270) }, "⟲"),
+      h("button", { title: `Turn ${side} right`, onclick: () => turn([card.id], side, 90) }, "⟳")) : null) : null;
+  const imgs = h("div", { class: "imgs" }, pic(card.front, "front"), pic(card.back, "back"));
   const src = card.source ? `from ${card.source.batch}, card ${card.source.position}` : "";
   let body;
   if (isInv) {
@@ -279,6 +285,12 @@ function renderToolbar() {
       n ? `${n} of ${all} selected` : `Select all ${all}`),
     h("span", { class: "grow" }),
     STAGE === "inventory" ? [
+      h("span", { class: "turn" }, "Turn fronts",
+        h("button", { disabled: !n, title: "Turn selected fronts left", onclick: () => turn([...selected], "front", 270) }, "⟲"),
+        h("button", { disabled: !n, title: "Turn selected fronts right", onclick: () => turn([...selected], "front", 90) }, "⟳"),
+        "backs",
+        h("button", { disabled: !n, title: "Turn selected backs left", onclick: () => turn([...selected], "back", 270) }, "⟲"),
+        h("button", { disabled: !n, title: "Turn selected backs right", onclick: () => turn([...selected], "back", 90) }, "⟳")),
       bad ? h("span", { class: "chip err" }, `${bad} selected need fixing`) : null,
       h("button", { disabled: !n || !!running(), onclick: () => startList(true) }, "Preview"),
       h("button", { class: "primary", disabled: !n || !!bad || !eb.ready || !!running(), title: eb.ready ? "" : eb.message,
@@ -289,6 +301,21 @@ function renderToolbar() {
     ] : []].flat().filter(Boolean));
 }
 const running = () => data.job && data.job.running;
+async function turn(ids, side, degrees) {
+  if (!ids.length) return;
+  try {
+    const d = await api({ action: "rotate", ids, side, degrees });
+    data = d;
+    // swap in the new photos without re-rendering (keeps what you're typing)
+    for (const card of data.cards) {
+      const el = $(`.card[data-id="${CSS.escape(card.id)}"]`); if (!el) continue;
+      const imgs = el.querySelectorAll(".imgs img");
+      if (imgs[0] && card.front) imgs[0].src = card.front;
+      if (imgs[1] && card.back) imgs[1].src = card.back;
+    }
+    if (d.error) flash(d.error);
+  } catch (e) { flash("Couldn't turn: " + e.message); }
+}
 async function move(action, ids) {
   if (action === "back" && !confirm(`Move ${ids.length} card(s) back to the inventory to re-price and list again?`)) return;
   selected.clear(); after(await api({ action, ids }));

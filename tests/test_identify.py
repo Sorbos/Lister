@@ -18,26 +18,26 @@ def card(**kw) -> CardInfo:
         category="sports", sport="Ice Hockey", league="NHL", year="1990-91", manufacturer="Upper Deck",
         set_name="Upper Deck", subset_insert=None, parallel=None, card_number="1", subject="Wayne Gretzky",
         team="Los Angeles Kings", rookie=False, autograph=False, memorabilia=False, serial_number=None,
-        graded=False, grader=None, grade=None, condition="near_mint_or_better", front_orientation="upright",
+        graded=False, grader=None, grade=None, condition="near_mint_or_better", front_orientation="up", back_orientation="up",
         confidence="high", uncertain_fields=[], notes="",
     )
     return CardInfo(**{**base, **kw})
 
 
 def test_title_basic_format():
-    assert build_title(card()) == "1990-91 Upper Deck Wayne Gretzky Los Angeles Kings #1"
+    assert build_title(card()) == "1990-91 Upper Deck #1 Wayne Gretzky Los Angeles Kings"
 
 
 def test_title_rookie_and_manufacturer():
     t = build_title(card(year="2005-06", manufacturer="Upper Deck", set_name="Young Guns", card_number="201",
                          subject="Sidney Crosby", team="Pittsburgh Penguins", rookie=True))
-    assert t == "2005-06 Upper Deck Young Guns Sidney Crosby Pittsburgh Penguins #201 RC"
+    assert t == "2005-06 Upper Deck Young Guns #201 Sidney Crosby Pittsburgh Penguins RC"
 
 
 def test_title_non_sport():
     t = build_title(card(category="non_sport", sport=None, league=None, year="1978", manufacturer=None,
                          set_name="The Muppet Show", card_number="60", subject="Fozzie Bear", team=None))
-    assert t == "1978 The Muppet Show Fozzie Bear #60"
+    assert t == "1978 The Muppet Show #60 Fozzie Bear"
 
 
 def test_title_drops_extras_to_fit_80():
@@ -72,7 +72,7 @@ def test_identify_batch_writes_cards_json(tmp_path):
     assert main(["split", str(SAMPLES / "fronts_01.jpg"), str(SAMPLES / "backs_01.jpg"), "-o", str(tmp_path)]) == 0
     before = cv2.imread(str(tmp_path / "card_02_front.jpg"))
     answers = [card(subject=f"Player {i}", card_number=str(i)) for i in range(1, 10)]
-    answers[1] = card(subject="Player 2", card_number="2", front_orientation="upside_down")
+    answers[1] = card(subject="Player 2", card_number="2", front_orientation="down")
     client = FakeClient(answers)
 
     results = identify_batch(tmp_path, client=client, progress=lambda *_: None)
@@ -82,7 +82,7 @@ def test_identify_batch_writes_cards_json(tmp_path):
     imgs = [b for b in client.calls[0]["messages"][0]["content"] if b["type"] == "image"]
     assert len(imgs) == 2
     data = json.loads((tmp_path / "cards.json").read_text())
-    assert data["cards"][0]["title"].endswith("Player 1 Los Angeles Kings #1")
+    assert data["cards"][0]["title"].endswith("#1 Player 1 Los Angeles Kings")
     # Upside-down card was rotated 180° on disk.
     after = cv2.imread(str(tmp_path / "card_02_front.jpg"))
     assert (cv2.rotate(before, cv2.ROTATE_180).astype(int) - after.astype(int)).__abs__().mean() < 3
@@ -154,3 +154,23 @@ def test_identify_finds_env_one_or_two_levels_up(tmp_path, monkeypatch):
         (root / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-test\n")
         assert main(["identify", str(batch)]) == 0
     assert seen == ["sk-ant-test", "sk-ant-test"]
+
+
+def test_title_without_number_uses_nno():
+    assert build_title(card(category="non_sport", year="1978", manufacturer=None, set_name="The Muppet Show",
+                            card_number=None, subject="Fozzie Bear", team=None)) == "1978 The Muppet Show nno Fozzie Bear"
+    assert build_title(card(card_number="  ")).startswith("1990-91 Upper Deck nno Wayne Gretzky")
+
+
+def test_turns_follow_the_picture_and_the_back_text(tmp_path):
+    """Picture sideways (top points left) → front turned clockwise to landscape; back turned by its text."""
+    assert main(["split", str(SAMPLES / "fronts_01.jpg"), str(SAMPLES / "backs_01.jpg"), "-o", str(tmp_path)]) == 0
+    f0 = cv2.imread(str(tmp_path / "card_01_front.jpg"))
+    b0 = cv2.imread(str(tmp_path / "card_01_back.jpg"))
+    answers = [card(subject=f"P{i}", front_orientation="left", back_orientation="down") for i in range(1, 10)]
+    identify_batch(tmp_path, client=FakeClient(answers), progress=lambda *_: None)
+    f1 = cv2.imread(str(tmp_path / "card_01_front.jpg"))
+    b1 = cv2.imread(str(tmp_path / "card_01_back.jpg"))
+    assert f0.shape[0] > f0.shape[1] and f1.shape[1] > f1.shape[0]  # portrait → landscape
+    assert abs(cv2.rotate(f0, cv2.ROTATE_90_CLOCKWISE).astype(int) - f1.astype(int)).mean() < 3
+    assert abs(cv2.rotate(b0, cv2.ROTATE_180).astype(int) - b1.astype(int)).mean() < 3

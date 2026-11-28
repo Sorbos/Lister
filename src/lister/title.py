@@ -1,6 +1,7 @@
 """Build an eBay title (max 80 chars) from card details.
 
-Format: Year [Manufacturer] Set [Insert] Subject [Team] #Num [RC] [Parallel] [/Serial] [AUTO] [Patch]
+Format: Year [Manufacturer] Set [Insert] #Num Subject [Team] [RC] [Parallel] [/Serial] [AUTO] [Patch]
+A card with no number gets "nno" (no number) in the number's place.
 When too long, the least important pieces are dropped first.
 """
 
@@ -31,10 +32,10 @@ def _pieces(info: Any) -> list[tuple[str | None, str]]:
         add("manufacturer", manu)
     add(None, set_name)
     add("insert", _get(info, "subset_insert"))
+    number = str(_get(info, "card_number") or "").strip().lstrip("#").strip()
+    add(None, f"#{number}" if number else "nno")
     add(None, _get(info, "subject"))
     add("team", _get(info, "team"))
-    if _get(info, "card_number"):
-        add(None, f"#{str(_get(info, 'card_number')).lstrip('#')}")
     if _get(info, "rookie"):
         add(None, "RC")
     add("parallel", _get(info, "parallel"))
