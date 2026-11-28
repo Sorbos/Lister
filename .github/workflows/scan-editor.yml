@@ -18,6 +18,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -42,14 +43,20 @@ jobs:
           packaging/scan_editor.py
 
       - name: Check the finished .exe edits scans
+        timeout-minutes: 5
         shell: pwsh
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP "self test"
+          $dir = Join-Path $env:RUNNER_TEMP "selftest"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           Copy-Item samples/fronts_01.jpg (Join-Path $dir "IMG_0045.jpg")
           Copy-Item samples/backs_01.jpg (Join-Path $dir "IMG_0046.jpg")
-          $p = Start-Process -FilePath dist/ListerScanEditor.exe -ArgumentList "--self-test", "`"$dir`"" -Wait -PassThru
-          Get-Content (Join-Path $dir "self-test.txt")
+          $p = Start-Process -FilePath dist/ListerScanEditor.exe -ArgumentList "--self-test", $dir -PassThru
+          if (-not $p.WaitForExit(120000)) {
+            Get-Process ListerScanEditor -ErrorAction SilentlyContinue | Stop-Process -Force
+            Write-Host "The .exe didn't finish within 2 minutes."
+          }
+          $report = Join-Path $dir "self-test.txt"
+          if (Test-Path $report) { Get-Content $report } else { Write-Host "(no self-test.txt written)" }
           $made = (Get-ChildItem $dir -Filter "*_scan*.jpg").Count
           Write-Host "exit code $($p.ExitCode), $made card images"
           if ($p.ExitCode -ne 0 -or $made -ne 18) { throw "self-test failed" }
