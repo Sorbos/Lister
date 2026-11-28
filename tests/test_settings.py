@@ -137,3 +137,32 @@ def test_every_page_has_the_navigation_bar(hub, tmp_path):
         assert f'<a href="{active}" class="on">' in page
     costs = call(hub, "costs").decode()
     assert "3.8¢" in costs and "2026-11-28_IMG_0045" in costs and "claude-opus-5-5" in costs
+
+
+def test_folder_browser(hub, tmp_path):
+    base = tmp_path / "Pictures"
+    (base / "Card scans").mkdir(parents=True)
+    (base / "Holiday").mkdir()
+    (base / ".hidden").mkdir()
+    (base / "photo.jpg").write_bytes(b"x")
+    d = json.loads(call(hub, "api/folders?path=" + urllib.request.quote(str(base))))
+    assert d["path"] == str(base.resolve()) and d["parent"] == str(base.resolve().parent)
+    assert [f["name"] for f in d["folders"]] == ["Card scans", "Holiday"]  # sorted, hidden left out
+    assert d["images"] == 1 and any(r["name"] == "Home" for r in d["roots"])
+    # Default: starts at the current scans folder (or the nearest existing folder above it).
+    settings.inbox(hub.folder).mkdir(parents=True, exist_ok=True)
+    assert json.loads(call(hub, "api/folders"))["path"] == str(settings.inbox(hub.folder).resolve())
+    # New folder, then it's shown.
+    d = json.loads(call(hub, "api/folders", {"parent": str(base), "name": "Hockey"}, origin=hub.url.rstrip("/")))
+    assert d["path"] == str((base / "Hockey").resolve()) and (base / "Hockey").is_dir()
+    for bad in ("", "a/b", "..", "Holiday"):
+        d = json.loads(call(hub, "api/folders", {"parent": str(base), "name": bad}))
+        assert d["error"], bad
+    with pytest.raises(urllib.error.HTTPError) as e:  # other websites can't create folders
+        call(hub, "api/folders", {"parent": str(base), "name": "x"}, origin="https://evil.example")
+    assert e.value.code == 403
+
+
+def test_windows_style_path_in_browser(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "to_local_path", lambda text: tmp_path)
+    assert settings.list_folders(r"C:\Users\Daniel", tmp_path)["path"] == str(tmp_path.resolve())

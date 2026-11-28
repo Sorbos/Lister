@@ -64,6 +64,62 @@ def image_count(folder: Path) -> int:
         return 0
 
 
+def _roots() -> list[dict]:
+    """Quick links for the folder browser: drives, home, Pictures."""
+    out = []
+    if os.name == "nt":
+        import string
+
+        out += [{"name": f"{d}:", "path": f"{d}:\\"} for d in string.ascii_uppercase if Path(f"{d}:\\").exists()]
+    else:
+        out += [{"name": f"{d.name.upper()}: (Windows)", "path": str(d)}
+                for d in sorted(Path("/mnt").glob("?")) if d.is_dir()]
+        out.append({"name": "/", "path": "/"})
+    home = Path.home()
+    out.append({"name": "Home", "path": str(home)})
+    for sub in ("Pictures", "Documents", "Desktop"):
+        if (home / sub).is_dir():
+            out.append({"name": sub, "path": str(home / sub)})
+    return out
+
+
+def list_folders(text: str | None, root: Path) -> dict:
+    """What the folder browser shows for one folder: its sub-folders, parent and scan count."""
+    folder = to_local_path(text) if text and text.strip() else inbox(root)
+    if not folder.is_dir():
+        folder = folder.parent if folder.parent.is_dir() else Path.home()
+    folder = folder.resolve()
+    subs = []
+    try:
+        for p in folder.iterdir():
+            try:
+                if p.is_dir() and not p.name.startswith((".", "$")) and p.name not in ("System Volume Information",):
+                    subs.append({"name": p.name, "path": str(p)})
+            except OSError:
+                continue
+    except OSError as e:
+        return {"path": str(folder), "parent": str(folder.parent) if folder.parent != folder else None,
+                "folders": [], "images": 0, "roots": _roots(), "error": f"Can't open this folder ({e.strerror})"}
+    subs.sort(key=lambda f: f["name"].lower())
+    return {"path": str(folder), "parent": str(folder.parent) if folder.parent != folder else None,
+            "folders": subs[:1000], "images": image_count(folder), "roots": _roots()}
+
+
+def make_folder(parent_text: str, name: str) -> Path:
+    """Create a new folder inside parent for the folder browser's New folder button."""
+    name = (name or "").strip()
+    if not name or any(c in name for c in '\\/:*?"<>|') or name in (".", ".."):
+        raise ValueError("Use a folder name without \\ / : * ? \" < > |")
+    parent = to_local_path(parent_text)
+    if not parent.is_dir():
+        raise ValueError("That folder doesn't exist any more")
+    new = parent / name
+    if new.exists():
+        raise ValueError(f"There's already a folder called {name} here")
+    new.mkdir()
+    return new
+
+
 def check_inbox(root: Path, text: str, confirmed: bool = False) -> tuple[str, Path | None, str]:
     """Validate a new scans folder. Returns (result, folder, message); result is ok|confirm|error."""
     if not text.strip():

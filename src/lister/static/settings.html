@@ -39,6 +39,27 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .msg.error { background: var(--err-bg); color: var(--err); }
 .current { font-family: ui-monospace, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; color: var(--text); }
 .hide { display: none; }
+dialog#picker { width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--panel); color: var(--text); display: none; }
+dialog#picker[open] { display: flex; flex-direction: column; }
+dialog#picker::backdrop { background: rgb(0 0 0 / .5); }
+.pk-head, .pk-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 14px; }
+.pk-head { border-bottom: 1px solid var(--line); }
+.pk-foot { border-top: 1px solid var(--line); }
+.pk-foot span { color: var(--muted); font-size: 13px; }
+.pk-path button { flex: none; white-space: nowrap; }
+.pk-roots { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 0; }
+.pk-roots button { padding: 4px 10px; font-size: 13px; }
+.pk-path { display: flex; gap: 8px; align-items: center; padding: 10px 14px; font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px; overflow-wrap: anywhere; }
+.pk-list { overflow-y: auto; min-height: 160px; max-height: 45vh; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.pk-list button { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line);
+  border-radius: 0; padding: 9px 14px; background: transparent; }
+.pk-list button:hover, .pk-list button:focus { background: var(--bg); }
+.pk-list .empty { color: var(--muted); padding: 14px; font-size: 13px; }
+.pk-new { display: flex; gap: 8px; padding: 10px 14px 0; }
+.pk-new input { flex: 1; }
+#pkMsg { margin: 8px 14px 0; }
 </style>
 </head>
 <body>
@@ -52,12 +73,18 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <p>Lister picks up scans saved here. Set your scanner software to save into the same folder.
        Each scan is <b>moved</b> out of this folder once it's used, so use a folder just for card scans.</p>
     <div>Now watching: <span class="current" id="current"></span></div>
-    <label>New folder (full path, e.g. C:\Users\you\Pictures\Card scans)
-      <input type="text" id="inbox" autocomplete="off" spellcheck="false">
-    </label>
     <div class="row">
-      <button class="primary" id="saveInbox">Use this folder</button>
+      <button class="primary" id="browse">Browse…</button>
       <button id="useDefault">Use the default folder</button>
+    </div>
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;color:var(--muted);font-size:13px">Or type the folder's full path</summary>
+      <label>Full path, e.g. C:\Users\you\Pictures\Card scans
+        <input type="text" id="inbox" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="row"><button id="saveInbox">Use this folder</button></div>
+    </details>
+    <div class="row">
       <button id="confirm" class="hide">Yes, use it</button>
     </div>
     <div class="msg hide" id="inboxMsg"></div>
@@ -96,6 +123,24 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <div class="msg hide" id="defMsg"></div>
   </section>
 </main>
+<dialog id="picker">
+  <div class="pk-head">
+    <b>Choose the scans folder</b>
+    <button id="pkClose" aria-label="Close">✕</button>
+  </div>
+  <div class="pk-roots" id="pkRoots"></div>
+  <div class="pk-path"><button id="pkUp" title="Up one folder">↑ Up</button><span id="pkPath"></span></div>
+  <div class="pk-list" id="pkList"></div>
+  <div class="pk-new">
+    <input type="text" id="pkNewName" placeholder="New folder name, e.g. Card scans">
+    <button id="pkNew">New folder</button>
+  </div>
+  <div class="msg hide" id="pkMsg"></div>
+  <div class="pk-foot">
+    <span id="pkInfo"></span>
+    <button class="primary" id="pkUse">Use this folder</button>
+  </div>
+</dialog>
 <script>
 const $ = s => document.querySelector(s);
 function show(el, kind, text) { el.className = "msg " + kind; el.textContent = text; }
@@ -151,6 +196,44 @@ $("#saveInbox").onclick = () => {
 };
 $("#inbox").addEventListener("keydown", e => { if (e.key === "Enter") $("#saveInbox").click(); });
 $("#useDefault").onclick = () => saveInbox("", false);
+
+// ---------------------------------------------------------------- folder browser
+let pk = null;
+async function openFolder(path) {
+  const r = await fetch("/api/folders?path=" + encodeURIComponent(path || ""), { cache: "no-store" });
+  showFolder(await r.json());
+}
+function showFolder(d) {
+  pk = d;
+  $("#pkPath").textContent = d.path;
+  $("#pkUp").disabled = !d.parent;
+  $("#pkRoots").replaceChildren(...d.roots.map(r => {
+    const b = document.createElement("button"); b.textContent = r.name; b.onclick = () => openFolder(r.path); return b; }));
+  const list = $("#pkList");
+  list.replaceChildren();
+  if (!d.folders.length) {
+    const e = document.createElement("div"); e.className = "empty"; e.textContent = "No folders inside this one."; list.append(e);
+  }
+  for (const f of d.folders) {
+    const b = document.createElement("button"); b.textContent = "📁 " + f.name; b.onclick = () => openFolder(f.path); list.append(b);
+  }
+  $("#pkInfo").textContent = d.images ? `${d.images} image(s) in this folder` : "No images in this folder";
+  if (d.error) show($("#pkMsg"), "error", d.error); else $("#pkMsg").className = "msg hide";
+}
+$("#browse").onclick = async () => { $("#picker").showModal(); await openFolder(""); };
+$("#pkClose").onclick = () => $("#picker").close();
+$("#pkUp").onclick = () => pk && pk.parent && openFolder(pk.parent);
+$("#pkUse").onclick = async () => { $("#picker").close(); await saveInbox(pk.path, false); };
+$("#pkNew").onclick = async () => {
+  const name = $("#pkNewName").value.trim();
+  if (!name) return show($("#pkMsg"), "error", "Type a name for the new folder.");
+  const r = await fetch("/api/folders", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parent: pk.path, name }) });
+  const d = await r.json();
+  showFolder(d);
+  if (!d.error) { $("#pkNewName").value = ""; show($("#pkMsg"), "ok", "Folder created. Click “Use this folder” to watch it."); }
+};
+$("#pkNewName").addEventListener("keydown", e => { if (e.key === "Enter") $("#pkNew").click(); });
 $("#saveWait").onclick = async () => {
   try {
     const s = await post({ wait_minutes: Number($("#wait").value) });

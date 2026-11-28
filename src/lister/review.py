@@ -734,6 +734,13 @@ class ReviewServer:
                     return self._send(200, server.costs_html(), "text/html; charset=utf-8")
                 if server.hub and self.path.split("?")[0] == "/api/settings":
                     return self._json(server.settings_payload())
+                if server.hub and self.path.split("?")[0] == "/api/folders":
+                    from urllib.parse import parse_qs, urlparse
+
+                    from . import settings
+
+                    q = parse_qs(urlparse(self.path).query).get("path", [""])[0]
+                    return self._json(settings.list_folders(q, server.folder))
                 if server.hub and self.path.startswith("/b/") and self.path.count("/") == 2:
                     return self._send(301, b"", "text/plain", {"Location": self.path + "/"})
                 if server.hub and self.path.startswith("/b/") and "/img/" in self.path:
@@ -768,6 +775,16 @@ class ReviewServer:
                     return self._send(400, b"bad json", "text/plain")
                 if server.hub and self.path.split("?")[0] == "/api/settings":
                     return self._json(server.update_settings(body if isinstance(body, dict) else {}))
+                if server.hub and self.path.split("?")[0] == "/api/folders":
+                    from . import settings
+
+                    body = body if isinstance(body, dict) else {}
+                    try:
+                        new = settings.make_folder(str(body.get("parent") or ""), str(body.get("name") or ""))
+                    except (ValueError, OSError) as e:
+                        return self._json({**settings.list_folders(str(body.get("parent") or ""), server.folder),
+                                           "error": str(e)})
+                    return self._json(settings.list_folders(str(new), server.folder))
                 if server.hub and self.path.split("?")[0] == "/api/inventory":
                     return self._json(server.inventory_action(body if isinstance(body, dict) else {}))
                 batch, sub = server._resolve(self.path)

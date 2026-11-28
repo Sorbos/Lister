@@ -72,11 +72,12 @@ waiting their turn show their place in line. If Lister isn't running, the panel 
 (scans folder, wait time) and **Costs** (what Claude has cost: last 7 days, this month, all time,
 per batch). It's there whenever Lister runs with `lister watch` or `lister batches`.
 
-**Changing the scans folder:** open **Settings**, type the folder's
-full path (e.g. `C:\Users\you\Pictures\Card scans`) and click *Use this folder*. It takes effect
-within seconds; set your scanner software to save there too. Lister moves each scan out once used,
-so it refuses a whole drive, your home folder or its own folders, and asks before using a folder
-that already holds lots of images. The same page sets how long a lone scan waits for its back.
+**Changing the scans folder:** open **Settings** and click **Browse…**. Pick the folder (quick
+links to your drives, Home and Pictures; **New folder** makes one, e.g. "Card scans") and click
+**Use this folder**; it takes effect within seconds. You can also type the path instead. Set your
+scanner software to save there too. Lister moves each scan out once used, so it refuses a whole
+drive, your home folder or its own folders, and asks before using a folder that already holds
+lots of images. The same page sets how long a lone scan waits for its back.
 
 Options: `--root D:\Cards` for another folder, `--no-read` to skip Claude (fill in by hand).
 `lister batches` opens the batch list without watching.
