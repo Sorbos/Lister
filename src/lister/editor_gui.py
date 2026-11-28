@@ -37,6 +37,13 @@ def _photo(img: np.ndarray, turns: int = 0) -> tk.PhotoImage:
     return tk.PhotoImage(data=base64.b64encode(buf.tobytes()).decode())
 
 
+def _photo_full(img: np.ndarray, width: int) -> tk.PhotoImage:
+    h, w = img.shape[:2]
+    small = cv2.resize(img, (width, max(1, round(width * h / w))), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".png", small)
+    return tk.PhotoImage(data=base64.b64encode(buf.tobytes()).decode())
+
+
 class CardTile:
     def __init__(self, app: "EditorApp", parent, path: Path):
         self.app, self.path, self.turns = app, path, 0
@@ -76,6 +83,8 @@ class EditorApp:
         self.cancel = threading.Event()
         self.worker: threading.Thread | None = None
         self.tiles: list[CardTile] = []
+        self.results: dict[Path, object] = {}  # the last run's ScanResults (outline previews, warnings)
+        self.previews: list = []  # keep Tk images alive
         self._build()
         self._refresh_ai()
         root.after(100, self._poll)
@@ -230,6 +239,7 @@ class EditorApp:
                         self.status.configure(text=f"{done} of {total} scans · {msg}")
                 elif kind == "done":
                     results, cost = ev[1], ev[2]
+                    self.results = {r.scan: r for r in results}
                     made = sum(len(r.outputs) for r in results if not r.skipped and not r.error)
                     skipped = sum(1 for r in results if r.skipped)
                     problems = [r for r in results if r.error]
@@ -264,6 +274,7 @@ class EditorApp:
         for child in self.grid.winfo_children():
             child.destroy()
         self.tiles = []
+        self.previews = []
         folder = Path(self.folder.get())
         scans = [s for s in find_scans(folder) if outputs_of(s)] if folder.is_dir() else []
         if not scans:
@@ -277,14 +288,36 @@ class EditorApp:
         """Add a few scans at a time so the window stays responsive with big folders."""
         for scan in scans[i:i + 3]:
             row = len(self.grid.winfo_children())
-            box = ttk.LabelFrame(self.grid, text=scan.name, padding=6)
+            r = self.results.get(scan)
+            warnings = getattr(r, "warnings", []) if r else []
+            outs = outputs_of(scan)
+            title = f"{'CHECK  ' if warnings else ''}{scan.name}  ·  {len(outs)} card{'s' if len(outs) != 1 else ''}"
+            box = ttk.LabelFrame(self.grid, text=title, padding=6)
             box.grid(row=row, column=0, sticky="ew", pady=4)
-            for n, out in enumerate(outputs_of(scan)):
+            cards = ttk.Frame(box)
+            cards.grid(row=1, column=1, sticky="nw")
+            preview = getattr(r, "preview", None) if r else None
+            if preview is not None:
+                # the scan with every card outlined: green = found, orange = recovered/filled in
+                ph = _photo_full(preview, 220)
+                self.previews.append(ph)
+                side = ttk.Frame(box)
+                side.grid(row=1, column=0, sticky="nw", padx=(0, 10))
+                ttk.Label(side, image=ph).pack()
+                ttk.Label(side, text="green = found\norange = recovered", foreground="#666", justify="left").pack(anchor="w")
+            for k, text in enumerate(warnings):
+                ttk.Label(box, text="Check: " + text, foreground="#b45309", wraplength=760, justify="left").grid(
+                    row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)) if k == 0 else None
+            if len(warnings) > 1:
+                ttk.Label(box, text="\n".join("Check: " + w for w in warnings[1:]), foreground="#b45309",
+                          wraplength=760, justify="left").grid(row=2, column=0, columnspan=2, sticky="w")
+            per_row = 5 if preview is not None else 6
+            for n, out in enumerate(outs):
                 try:
-                    tile = CardTile(self, box, out)
+                    tile = CardTile(self, cards, out)
                 except FileNotFoundError:
                     continue
-                tile.frame.grid(row=n // 6, column=n % 6, padx=3, pady=3, sticky="n")
+                tile.frame.grid(row=n // per_row, column=n % per_row, padx=3, pady=3, sticky="n")
                 self.tiles.append(tile)
         if i + 3 < len(scans):
             self.root.after(10, self._load_rows, scans, i + 3)

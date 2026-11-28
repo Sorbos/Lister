@@ -23,8 +23,8 @@ from typing import Callable
 
 import numpy as np
 
-from .images import (Card, DetectionError, detect_cards, load, match_cards, recover_from_partner, rotate_file,
-                     save)
+from .images import (Card, DetectionError, backdrop_colour, detect_cards, fill_grid, load, match_cards,
+                     outline_preview, recover_from_partner, rotate_file, save)
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 OUTPUT_RE = re.compile(r"_scan\d+$", re.IGNORECASE)
@@ -61,9 +61,12 @@ class ScanResult:
     outputs: list[Path] = field(default_factory=list)
     skipped: bool = False
     partner: Path | None = None
-    recovered: int = 0
+    recovered: int = 0  # cut out at the spot where the other side's scan has them
+    filled: int = 0  # found in an empty slot of the card grid
     turned: int = 0
     error: str | None = None
+    warnings: list[str] = field(default_factory=list)
+    preview: object = None  # small copy of the scan with every card outlined (numpy image), this run only
 
     def summary(self) -> str:
         if self.error:
@@ -75,9 +78,12 @@ class ScanResult:
             bits.append(f"paired with {self.partner.name}")
         if self.recovered:
             bits.append(f"{self.recovered} found using {self.partner.name if self.partner else 'its partner'}")
+        if self.filled:
+            bits.append(f"{self.filled} found in a gap in the grid")
         if self.turned:
             bits.append(f"{self.turned} turned upright")
-        return f"{self.scan.name}: " + ", ".join(bits)
+        text = f"{self.scan.name}: " + ", ".join(bits)
+        return text + "".join(f"\n   Check: {w}" for w in self.warnings)
 
 
 def layouts_match(a: list[Card], b: list[Card]) -> bool:
@@ -140,9 +146,19 @@ def process_folder(folder: str | Path, *, overwrite: bool = False, orient: Orien
         img, cards = d
         if other_d:
             cards, r.recovered = recover_from_partner(img, cards, other_d[1], margin_frac)
+        cards, r.filled, unclear = fill_grid(img, cards, margin_frac)
+        lightness, colourful = backdrop_colour(img)
+        if colourful < 10 and lightness > 30:
+            r.warnings.append("light grey/white background: cards are found much more reliably on a coloured "
+                              "sheet (green, blue or black). Check every card was cut out.")
+        if unclear:
+            r.warnings.append(f"{unclear} spot{'s' if unclear != 1 else ''} in the card grid had something in it that "
+                              "couldn't be cut out as a card. Check the scan.")
         if not cards:
             r.error = "no cards found"
+            r.preview = outline_preview(img, [])
             return
+        r.preview = outline_preview(img, cards)
         images = [c.image for c in cards]
         turns = None
         if orient is not None:
@@ -175,6 +191,13 @@ def process_folder(folder: str | Path, *, overwrite: bool = False, orient: Orien
             if da and db and layouts_match(da[1], db[1]):
                 handle(a, b)
                 handle(b, a)
+                ra, rb = results[a], results[b]
+                if not (ra.skipped or rb.skipped or ra.error or rb.error) and len(ra.outputs) != len(rb.outputs):
+                    msg = (f"{a.name} has {len(ra.outputs)} cards but its other side {b.name} has "
+                           f"{len(rb.outputs)}: a card may be missing. Check both scans.")
+                    ra.warnings.append(msg)
+                    rb.warnings.append(msg)
+                    progress(f"Check: {msg}", done, total)
                 cache.pop(a, None)
                 cache.pop(b, None)
                 i += 2

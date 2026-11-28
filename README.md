@@ -26,6 +26,13 @@ an unknown publisher: click **More info → Run anyway**. On first start it offe
   flipped where it lay), they're recognised as a pair, so `_scan3` of the front scan and
   `_scan3` of the back scan are the same card. A card one scan misses (e.g. a green card on the
   green backdrop) is cut out at the spot where the other scan has it.
+- **Catching every card:** cards lie in a grid, so if a card isn't detected (e.g. it blends into
+  the backdrop), Lister looks in the empty spots of the grid and cuts out anything card-like it
+  finds there, even without a back scan. Spots with only backdrop stay empty, so fewer than 9 cards
+  is fine. Each scan in the results shows a small copy with every card outlined (green = found,
+  orange = recovered), and a **CHECK** note appears when: a front and its back still have
+  different card counts, something in the grid couldn't be cut out cleanly, or the background is
+  white/grey (use a coloured sheet; green, blue or black work best).
 - **Already done?** Scans that already have `_scan` images are skipped; tick **Redo scans that
   are already done** to make them again.
 - **Turn cards upright with AI (optional):** click **AI key…**, paste an Anthropic API key, and

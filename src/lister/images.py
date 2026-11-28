@@ -27,6 +27,7 @@ class Card:
     angle: float  # degrees the card was rotated on the scanner glass
     corners: np.ndarray = field(repr=False)  # 4x2 float32, TL, TR, BR, BL
     image: np.ndarray = field(repr=False)  # cropped, upright BGR image
+    source: str = "found"  # "found", or recovered: "partner" (from the other side's scan) / "grid" (empty grid slot)
 
 
 class DetectionError(RuntimeError):
@@ -245,32 +246,65 @@ def _edge_map(img: np.ndarray) -> np.ndarray:
     return cv2.magnitude(gx, gy)
 
 
-def _perimeter_score(edges: np.ndarray, center, size, angle: float) -> float:
-    """How strongly the image has edges along this rectangle's outline."""
+def _outline_map(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Where card outlines are: mostly the boundary between backdrop and not-backdrop (which ignores
+    edges inside a card, like a photo's frame), plus a little of the image's own edges for cards that
+    blend into the backdrop."""
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    boundary = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, k).astype(np.float32)
+    boundary = cv2.GaussianBlur(boundary, (9, 9), 0)
+    edges = _edge_map(img)
+    edges = edges * (255.0 / max(1.0, float(np.percentile(edges, 99))))
+    return boundary + 0.35 * np.clip(edges, 0, 255)
+
+
+def _outline_points(center, size, angle: float, n: int = 40) -> np.ndarray:
     pts = cv2.boxPoints((tuple(center), tuple(size), angle))
-    samples = []
-    for k in range(4):
-        a, b = pts[k], pts[(k + 1) % 4]
-        t = np.linspace(0.08, 0.92, 40)[:, None]  # skip the corners themselves
-        samples.append(a + (b - a) * t)
-    xy = np.concatenate(samples).round().astype(int)
-    h, w = edges.shape
+    t = np.linspace(0.08, 0.92, n)[:, None]  # skip the corners themselves
+    return np.concatenate([pts[k] + (pts[(k + 1) % 4] - pts[k]) * t for k in range(4)])
+
+
+def _sample(img: np.ndarray, xy: np.ndarray):
+    xy = xy.round().astype(int)
+    h, w = img.shape[:2]
     ok = (xy[:, 0] >= 0) & (xy[:, 0] < w) & (xy[:, 1] >= 0) & (xy[:, 1] < h)
-    if ok.mean() < 0.9:
+    return img[xy[ok, 1], xy[ok, 0]], ok.mean()
+
+
+def _perimeter_score(edges: np.ndarray, center, size, angle: float, backdrop: np.ndarray | None = None) -> float:
+    """How well a card-sized rectangle here sits on a card's outline.
+
+    Strong edges along the outline, and (when `backdrop` is given) backdrop just outside it all the
+    way round: a rectangle that has slid onto a picture's edge inside a card has card, not backdrop,
+    outside one of its sides.
+    """
+    vals, inside_frac = _sample(edges, _outline_points(center, size, angle))
+    if inside_frac < 0.9 or not len(vals):
         return 0.0
-    return float(edges[xy[ok, 1], xy[ok, 0]].mean())
+    score = float(vals.mean())
+    if backdrop is not None:
+        pad = 0.04 * min(size)
+        ring, ring_inside = _sample(backdrop, _outline_points(center, (size[0] + 2 * pad, size[1] + 2 * pad), angle))
+        score *= (float(ring.mean()) if len(ring) else 0.0) ** 2
+    return score
 
 
-def _refine_rect(edges: np.ndarray, center, size, angle: float, reach: float) -> tuple:
-    """Nudge a rectangle (position ±reach px, angle ±4°) to sit on the card's real edges."""
-    best = (_perimeter_score(edges, center, size, angle), tuple(center), angle)
-    for step, span, astep, aspan in ((reach / 8, reach, 1.0, 4.0), (2.0, reach / 8, 0.25, 1.0)):
-        cx, cy = best[1]
-        a0 = best[2]
+def _refine_rect(edges: np.ndarray, center, size, angle: float, reach: float,
+                 backdrop: np.ndarray | None = None) -> tuple:
+    """Nudge a rectangle (position ±reach px, angle ±4°) to sit on the card's real outline."""
+    coarse_step = reach / 12
+    # Coarse pass on a blurred map, so a step of several px can't jump over a thin outline;
+    # then the sharp map places it to the pixel.
+    blurred = cv2.GaussianBlur(edges, (0, 0), sigmaX=max(1.0, coarse_step / 2))
+    best = None
+    for emap, step, span, astep, aspan in ((blurred, coarse_step, reach, 1.0, 4.0), (edges, 1.5, coarse_step, 0.25, 1.0)):
+        cx, cy = best[1] if best else center
+        a0 = best[2] if best else angle
+        best = (_perimeter_score(emap, (cx, cy), size, a0, backdrop), (cx, cy), a0)
         for dx in np.arange(-span, span + 0.1, step):
             for dy in np.arange(-span, span + 0.1, step):
                 for da in np.arange(-aspan, aspan + 0.01, astep):
-                    sc = _perimeter_score(edges, (cx + dx, cy + dy), size, a0 + da)
+                    sc = _perimeter_score(emap, (cx + dx, cy + dy), size, a0 + da, backdrop)
                     if sc > best[0]:
                         best = (sc, (cx + dx, cy + dy), a0 + da)
     return best[1], best[2]
@@ -334,16 +368,117 @@ def recover_from_partner(img: np.ndarray, cards: list[Card], partner: list[Card]
             continue  # nothing but backdrop there
         # The card may have moved a little when flipped: fit the outline to its real edges.
         if "edges" not in locals():
-            edges = _edge_map(img)
+            edges = _outline_map(img, mask)
         (w_, h_) = p.size
-        center, angle = _refine_rect(edges, target, (w_, h_), p.angle, reach=0.2 * min(p.size))
+        center, angle = _refine_rect(edges, target, (w_, h_), p.angle, reach=0.2 * min(p.size),
+                                     backdrop=(mask == 0).astype(np.float32))
         corners = _order_corners(cv2.boxPoints((center, (w_, h_), angle)))
         found.append((tuple(center), p.size, angle, corners))
         added += 1
     if not added:
         return cards, 0
-    order = _reading_order([f[0] for f in found], [f[1][1] for f in found])
-    out = [Card(index=n, center=found[i][0], size=found[i][1], angle=found[i][2], corners=found[i][3],
-                image=_warp(img, found[i][3], margin_frac))
-           for n, i in enumerate(order, start=1)]
-    return out, added
+    return _merge(img, cards, found[len(cards):], "partner", margin_frac), added
+
+
+def _merge(img: np.ndarray, cards: list[Card], new: list[tuple], source: str, margin_frac: float) -> list[Card]:
+    """Existing cards plus new (center, size, angle, corners) ones, renumbered in reading order."""
+    extra = [Card(index=0, center=c, size=sz, angle=a, corners=k, image=_warp(img, k, margin_frac), source=source)
+             for c, sz, a, k in new]
+    everything = list(cards) + extra
+    order = _reading_order([c.center for c in everything], [c.size[1] for c in everything])
+    out = []
+    for n, i in enumerate(order, start=1):
+        c = everything[i]
+        out.append(Card(index=n, center=c.center, size=c.size, angle=c.angle, corners=c.corners, image=c.image,
+                        source=c.source))
+    return out
+
+
+def _clusters(values: list[float], tol: float) -> list[float]:
+    """Group nearby values (row or column positions); return each group's mean, in order."""
+    groups: list[list[float]] = []
+    for v in sorted(values):
+        if groups and v - np.mean(groups[-1]) <= tol:
+            groups[-1].append(v)
+        else:
+            groups.append([v])
+    return [float(np.mean(g)) for g in groups]
+
+
+def backdrop_colour(img: np.ndarray) -> tuple[float, float]:
+    """(lightness 0-100, colourfulness) of the scan's margin, i.e. the backdrop the cards lie on."""
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+    h, w = lab.shape[:2]
+    b = max(5, min(h, w) // 100)
+    border = np.concatenate(
+        [lab[:b].reshape(-1, 3), lab[-b:].reshape(-1, 3), lab[:, :b].reshape(-1, 3), lab[:, -b:].reshape(-1, 3)])
+    bg = np.median(border, axis=0)
+    return float(bg[0] * 100 / 255), float(np.linalg.norm(bg[1:] - 128))
+
+
+def fill_grid(img: np.ndarray, cards: list[Card], margin_frac: float = 0.03) -> tuple[list[Card], int, int]:
+    """Look in the empty slots of the card grid for cards that weren't detected.
+
+    The rows and columns come from the cards that were found. A slot that is plain backdrop stays
+    empty (fewer than 9 cards is fine); a slot with something in it gets a card outline fitted to its
+    edges. Returns (cards in reading order, cards added, slots with something unclear in them).
+    """
+    if len(cards) < 2:
+        return cards, 0, 0
+    w = float(np.median([c.size[0] for c in cards]))
+    h = float(np.median([c.size[1] for c in cards]))
+    rows = _clusters([c.center[1] for c in cards], 0.5 * h)
+    cols = _clusters([c.center[0] for c in cards], 0.5 * w)
+    if len(rows) * len(cols) <= len(cards):
+        return cards, 0, 0
+    mask = _background_mask(img)
+    edges = _edge_map(img)
+    outline = _outline_map(img, mask)
+    backdrop = (mask == 0).astype(np.float32)
+    backdrop_edges = float(np.median(edges[mask == 0])) if np.any(mask == 0) else 1.0
+    taken = [np.array(c.center) for c in cards]
+    new, unclear = [], 0
+    H, W = mask.shape
+    for y in rows:
+        for x in cols:
+            slot = np.array([x, y])
+            if any(abs(t[0] - x) < 0.5 * w and abs(t[1] - y) < 0.5 * h for t in taken):
+                continue  # a card is here already
+            if not (w / 2 <= x <= W - w / 2 and h / 2 <= y <= H - h / 2):
+                continue
+
+            def content(center, angle=0.0):
+                region = np.zeros(mask.shape, np.uint8)
+                box = cv2.boxPoints((tuple(center), (w, h), angle)).astype(np.int32)
+                cv2.fillConvexPoly(region, box, 255)
+                inside = cv2.countNonZero(region)
+                return cv2.countNonZero(cv2.bitwise_and(mask, region)) / inside if inside else 0.0
+
+            if content(slot) < 0.08:
+                continue  # just backdrop: no card in this slot
+            center, angle = _refine_rect(outline, slot, (w, h), 0.0, reach=0.5 * min(w, h), backdrop=backdrop)
+            strong = _perimeter_score(edges, center, (w, h), angle) >= 2.5 * max(backdrop_edges, 1.0)
+            clear_of_others = all(np.linalg.norm(np.array(center) - t) > 0.6 * min(w, h) for t in taken)
+            if strong and clear_of_others and content(center, angle) >= 0.2:
+                corners = _order_corners(cv2.boxPoints((tuple(center), (w, h), angle)))
+                new.append((tuple(center), (w, h), angle, corners))
+                taken.append(np.array(center))
+            else:
+                unclear += 1
+    if not new:
+        return cards, 0, unclear
+    return _merge(img, cards, new, "grid", margin_frac), len(new), unclear
+
+
+def outline_preview(img: np.ndarray, cards: list[Card], width: int = 360) -> np.ndarray:
+    """Small copy of the scan with each card outlined (green = found, orange = recovered) and numbered."""
+    scale = width / img.shape[1]
+    small = cv2.resize(img, (width, round(img.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+    for c in cards:
+        pts = (c.corners * scale).astype(np.int32)
+        colour = (60, 200, 60) if c.source == "found" else (0, 140, 255)
+        cv2.polylines(small, [pts], True, colour, 2, lineType=cv2.LINE_AA)
+        cx, cy = (np.array(c.center) * scale).astype(int)
+        cv2.putText(small, str(c.index), (cx - 7, cy + 7), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 3, cv2.LINE_AA)
+        cv2.putText(small, str(c.index), (cx - 7, cy + 7), cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2, cv2.LINE_AA)
+    return small

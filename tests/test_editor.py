@@ -175,3 +175,69 @@ def test_real_green_card_recovered_from_its_back(tmp_path):
     green = load(tmp_path / "IMG_20261120_0001.jpg")[20, 20].astype(int)
     for y, x in ((3, 3), (3, -4), (-4, 3), (-4, -4)):
         assert np.abs(ola[y, x].astype(int) - green).max() < 60
+
+
+# ---------------------------------------------------------------- catching every card
+def test_grid_finds_hidden_cards_in_real_scans():
+    """Pretend a card wasn't detected: grid fill-in cuts it out at its real spot (within ~1 mm)."""
+    from lister.images import fill_grid
+
+    for name in ("fronts_01.jpg", "backs_02.jpg"):
+        img = load(SAMPLES / name)
+        cards = detect_cards(img, expected=None)
+        for i in (0, 4, len(cards) - 1):
+            out, added, unclear = fill_grid(img, cards[:i] + cards[i + 1:])
+            assert added == 1 and len(out) == len(cards)
+            new = next(c for c in out if c.source == "grid")
+            assert np.linalg.norm(np.array(new.center) - np.array(cards[i].center)) < 12, (name, i)
+            assert new.index == cards[i].index  # same _scanN number as it would have had
+
+
+def test_grid_finds_green_card_without_its_back(tmp_path):
+    shutil.copy(SAMPLES / "fronts_02.jpg", tmp_path / "front.jpg")  # no back scan in the folder
+    [r] = process_folder(tmp_path)
+    assert len(r.outputs) == 9 and r.filled == 1 and r.partner is None and not r.warnings
+    assert r.preview is not None and r.preview.shape[1] == 360
+
+
+def test_empty_slots_stay_empty(tmp_path):
+    """Fewer cards than a full grid: nothing is invented in the empty spots."""
+    img = load(SAMPLES / "fronts_01.jpg")
+    cards = detect_cards(img)
+    for c in cards[6:]:  # remove the bottom row from the scan itself (paint it backdrop)
+        cv2.fillConvexPoly(img, c.corners.astype(np.int32), tuple(int(v) for v in img[20, 20]))
+        cv2.polylines(img, [c.corners.astype(np.int32)], True, tuple(int(v) for v in img[20, 20]), 30)
+    for c in (cards[1], cards[5]):  # and two more: gaps inside the grid
+        cv2.fillConvexPoly(img, c.corners.astype(np.int32), tuple(int(v) for v in img[20, 20]))
+        cv2.polylines(img, [c.corners.astype(np.int32)], True, tuple(int(v) for v in img[20, 20]), 30)
+    cv2.imwrite(str(tmp_path / "scan.jpg"), img)
+    [r] = process_folder(tmp_path)
+    assert len(r.outputs) == 4 and r.filled == 0 and not r.warnings
+
+
+def test_white_background_warning(tmp_path):
+    from lister.images import _background_mask
+
+    img = load(SAMPLES / "fronts_01.jpg")
+    img[_background_mask(img) == 0] = (238, 238, 238)
+    cv2.imwrite(str(tmp_path / "scan.jpg"), img)
+    [r] = process_folder(tmp_path)
+    assert any("white background" in w for w in r.warnings)
+    assert "Check:" in r.summary()
+
+
+def test_front_back_count_mismatch_is_flagged(folder, monkeypatch):
+    """If, after all the recovery, a front and its back still differ, both get a warning."""
+    import lister.editor_core as core
+
+    back = load(folder / "IMG_20261023_0046.jpg")
+    c = detect_cards(back)[4]
+    cv2.fillConvexPoly(back, c.corners.astype(np.int32), tuple(int(v) for v in back[20, 20]))
+    cv2.polylines(back, [c.corners.astype(np.int32)], True, tuple(int(v) for v in back[20, 20]), 30)
+    cv2.imwrite(str(folder / "IMG_20261023_0046.jpg"), back)  # a card really is missing from the back
+    monkeypatch.setattr(core, "recover_from_partner", lambda img, cards, partner, m=0.03: (cards, 0))
+    msgs = []
+    front, back_r = process_folder(folder, progress=lambda m, d, t: msgs.append(m))
+    assert len(front.outputs) == 9 and len(back_r.outputs) == 8
+    assert any("may be missing" in w for w in front.warnings) and any("may be missing" in w for w in back_r.warnings)
+    assert any(m.startswith("Check:") for m in msgs)
