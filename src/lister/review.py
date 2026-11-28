@@ -325,10 +325,41 @@ class ReviewServer:
                 problems.append(f"<li><b>{html_escape(note.stem)}</b>: {html_escape(note.read_text().strip())}</li>")
         page = resources.files("lister").joinpath("static/hub.html").read_text()
         page = page.replace("{{ROWS}}", "\n".join(rows) or "<p>No batches yet. Scan into the inbox folder.</p>")
-        page = page.replace("{{INBOX}}", html_escape(str(self.folder / "inbox")))
+        from . import settings
+
+        page = page.replace("{{INBOX}}", html_escape(str(settings.inbox(self.folder))))
         page = page.replace("{{PROBLEMS}}", ("<h2>Problems</h2><ul class=problems>" + "".join(problems) + "</ul>")
                             if problems else "")
         return page.encode()
+
+    def settings_payload(self) -> dict:
+        from . import settings
+
+        cfg = settings.load(self.folder)
+        inbox = settings.inbox(self.folder)
+        return {"inbox": str(inbox), "using_default": not cfg["inbox"], "exists": inbox.is_dir(),
+                "waiting_images": settings.image_count(inbox), "wait_minutes": cfg["wait_minutes"]}
+
+    def update_settings(self, body: dict) -> dict:
+        from . import settings
+
+        result, message = "ok", "Saved."
+        if "inbox" in body:
+            result, folder, message = settings.check_inbox(self.folder, str(body.get("inbox") or ""),
+                                                           bool(body.get("confirm")))
+            if result == "ok":
+                settings.save(self.folder, {"inbox": str(folder) if folder else None})
+        if "wait_minutes" in body:
+            try:
+                minutes = int(body["wait_minutes"])
+            except (TypeError, ValueError):
+                minutes = 0
+            if 1 <= minutes <= 120:
+                settings.save(self.folder, {"wait_minutes": minutes})
+                message = f"Lone scans now wait {minutes} minute(s) for their back."
+            else:
+                result, message = "error", "Pick between 1 and 120 minutes."
+        return {**self.settings_payload(), "result": result, "message": message}
 
     def _resolve(self, path: str) -> tuple[BatchState | None, str]:
         """Map a URL path to (batch, sub-path)."""
@@ -363,6 +394,11 @@ class ReviewServer:
             def do_GET(self):
                 if server.hub and self.path.split("?")[0] in ("/", "/index.html"):
                     return self._send(200, server.index_html(), "text/html; charset=utf-8")
+                if server.hub and self.path.split("?")[0] == "/settings":
+                    html = resources.files("lister").joinpath("static/settings.html").read_bytes()
+                    return self._send(200, html, "text/html; charset=utf-8")
+                if server.hub and self.path.split("?")[0] == "/api/settings":
+                    return self._json(server.settings_payload())
                 if server.hub and self.path.startswith("/b/") and self.path.count("/") == 2:
                     return self._send(301, b"", "text/plain", {"Location": self.path + "/"})
                 batch, sub = server._resolve(self.path)
@@ -381,10 +417,7 @@ class ReviewServer:
                 self._send(404, b"not found", "text/plain")
 
             def do_POST(self):
-                batch, sub = server._resolve(self.path)
-                if batch is None or sub != "/api/state":
-                    return self._send(404, b"not found", "text/plain")
-                # Reject requests from other websites (a page you visit can't edit your drafts).
+                # Reject requests from other websites (a page you visit can't edit your drafts or settings).
                 origin = self.headers.get("Origin")
                 if origin and origin.rstrip("/") + "/" != server.url:
                     return self._send(403, b"forbidden", "text/plain")
@@ -392,6 +425,11 @@ class ReviewServer:
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 except (ValueError, json.JSONDecodeError):
                     return self._send(400, b"bad json", "text/plain")
+                if server.hub and self.path.split("?")[0] == "/api/settings":
+                    return self._json(server.update_settings(body if isinstance(body, dict) else {}))
+                batch, sub = server._resolve(self.path)
+                if batch is None or sub != "/api/state":
+                    return self._send(404, b"not found", "text/plain")
                 batch.update(body)
                 self._json({**batch.payload(), "hub": server.hub})
 

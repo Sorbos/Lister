@@ -65,6 +65,12 @@ Scans left in the inbox are picked up next time.
 - The last scan waits 10 minutes for its back (`lister watch --wait 5` to change), then goes
   ahead as fronts only.
 
+**Changing the scans folder:** on the batch list page click **⚙ Settings**, type the folder's
+full path (e.g. `C:\Users\you\Pictures\Card scans`) and click *Use this folder*. It takes effect
+within seconds; set your scanner software to save there too. Lister moves each scan out once used,
+so it refuses a whole drive, your home folder or its own folders, and asks before using a folder
+that already holds lots of images. The same page sets how long a lone scan waits for its back.
+
 Options: `--root D:\Cards` for another folder, `--no-read` to skip Claude (fill in by hand).
 `lister batches` opens the batch list without watching.
 

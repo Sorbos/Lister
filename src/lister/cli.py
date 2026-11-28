@@ -98,10 +98,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
             import anthropic
 
             client = anthropic.Anthropic()
-    watcher = Watcher(root, client=client, auto_identify=client is not None, pair_timeout=args.wait * 60)
+    watcher = Watcher(root, client=client, auto_identify=client is not None, pair_timeout=args.wait * 60 if args.wait is not None else None)
     server = ReviewServer(root, port=args.port, hub=True)
     threading.Thread(target=server.serve, kwargs={"open_browser": not args.no_browser}, daemon=True).start()
-    print(f"Scan into {watcher.inbox}. New batches show up on the review page.")
+    print(f"Scan into {watcher.inbox} (change it on the Settings page). New batches show up on the review page.")
     try:
         watcher.run()
     except KeyboardInterrupt:
@@ -293,8 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--port", type=int, default=8765)
     w.add_argument("--no-browser", action="store_true")
     w.add_argument("--no-read", action="store_true", help="Cut out and pair cards, but don't read them with Claude")
-    w.add_argument("--wait", type=float, default=10,
-                   help="Minutes a lone scan waits for its back scan before going ahead as fronts only (default 10)")
+    w.add_argument("--wait", type=float, default=None,
+                   help="Minutes a lone scan waits for its back scan (default: Settings page, 10)")
     w.set_defaults(func=cmd_watch)
 
     rv = sub.add_parser("batches", help="Open the page listing every batch (without watching the inbox)")

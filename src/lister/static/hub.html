@@ -32,8 +32,10 @@ small { color: var(--muted); }
 </head>
 <body>
 <header>
-  <h1>Lister batches</h1>
-  <p>Watching {{INBOX}}. This page refreshes every few seconds.</p>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+    <h1>Lister batches</h1><a href="settings">⚙ Settings</a>
+  </div>
+  <p>Watching {{INBOX}} (<a href="settings">change</a>). This page refreshes every few seconds.</p>
 </header>
 <main>
   <ul>

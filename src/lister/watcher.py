@@ -43,19 +43,21 @@ class Seen:
 
 class Watcher:
     def __init__(self, root: str | Path, *, client=None, model: str | None = None, auto_identify: bool = True,
-                 pair_timeout: float = 600, settle: float = 3.0, clock=time.time, progress=print,
+                 pair_timeout: float | None = None, settle: float = 3.0, clock=time.time, progress=print,
                  identify=None, background: bool = True):
         from .identify import DEFAULT_MODEL, identify_batch
 
         self.root = Path(root)
-        self.inbox, self.batches = self.root / "inbox", self.root / "batches"
+        self.default_inbox, self.batches = self.root / "inbox", self.root / "batches"
         self.done, self.problems = self.root / "done", self.root / "problems"
-        for d in (self.inbox, self.batches, self.done, self.problems):
+        for d in (self.default_inbox, self.batches, self.done, self.problems):
             d.mkdir(parents=True, exist_ok=True)
         import os
 
         self.client, self.model = client, model or os.environ.get("LISTER_MODEL") or DEFAULT_MODEL
-        self.auto_identify, self.pair_timeout, self.settle = auto_identify, pair_timeout, settle
+        self.auto_identify, self._pair_timeout, self.settle = auto_identify, pair_timeout, settle
+        self._last_inbox: Path | None = None
+        self._missing_warned = False
         self.clock, self.progress = clock, progress
         self.identify = identify or identify_batch
         self.seen: dict[Path, Seen] = {}
@@ -64,11 +66,38 @@ class Watcher:
         self.jobs = []
         self._lock = threading.Lock()
 
+    # ------------------------------------------------------------ settings (changeable from the browser)
+    @property
+    def inbox(self) -> Path:
+        from . import settings
+
+        return settings.inbox(self.root)
+
+    @property
+    def pair_timeout(self) -> float:
+        from . import settings
+
+        if self._pair_timeout is not None:
+            return self._pair_timeout
+        return float(settings.load(self.root)["wait_minutes"] or 10) * 60
+
     # ------------------------------------------------------------ files
     def _scan_inbox(self) -> tuple[list[Path], bool]:
         """Return (ready files in order, whether any file is still being written)."""
         now = self.clock()
-        files = [p for p in self.inbox.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXT]
+        inbox = self.inbox
+        if inbox != self._last_inbox:
+            if self._last_inbox is not None:
+                self.progress(f"Now watching {inbox}")
+            self._last_inbox, self._missing_warned = inbox, False
+            self.seen.clear()
+            self.cards.clear()
+        if not inbox.is_dir():
+            if not self._missing_warned:
+                self.progress(f"Scans folder not found: {inbox} (change it on the Settings page)")
+                self._missing_warned = True
+            return [], False
+        files = [p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXT]
         for p in list(self.seen):
             if p not in files:
                 self.seen.pop(p, None)
