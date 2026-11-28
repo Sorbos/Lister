@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lister Review</title>
 <style>
-:root {
+:root { color-scheme: light;
   --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #677085; --line: #dde1e8;
   --accent: #2b6cb0; --accent-text: #fff; --ok: #237a4b; --ok-bg: #e5f4ec; --warn: #a15c00;
   --warn-bg: #fff4e0; --err: #b42318; --err-bg: #fdecea; --input: #fff;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root { color-scheme: dark;
     --bg: #14171c; --panel: #1d2128; --text: #e7eaf0; --muted: #98a1b3; --line: #2e343e;
     --accent: #5b9be0; --accent-text: #0d1117; --ok: #5fcf8e; --ok-bg: #173325; --warn: #f0b45a;
     --warn-bg: #3a2c12; --err: #ff8a80; --err-bg: #3d1c1a; --input: #15181d;
@@ -50,7 +50,7 @@ label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
 label.uncertain input, label.uncertain select { border-color: var(--warn); background: var(--warn-bg); }
 label.check { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; }
 input, select, button { font: inherit; color: var(--text); }
-input[type=text], input[type=number], select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); }
+input[type=text], input[type=number], input[type=datetime-local], select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); }
 input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0 0; padding: 8px 10px 10px; }
 legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
