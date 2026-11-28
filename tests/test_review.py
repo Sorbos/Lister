@@ -142,3 +142,35 @@ def test_state_includes_batch_cost(server):
     data["cost_usd"] = 0.3421
     (server.folder / "cards.json").write_text(json.dumps(data))
     assert json.loads(get(server, "/api/state")[1])["claude_cost_usd"] == 0.3421
+
+
+def test_claude_results_fill_in_after_page_was_opened(tmp_path):
+    """Open the review before Claude has read the cards, then Claude finishes: titles appear,
+    but a card you already typed into keeps your edits."""
+    import os
+    import time
+
+    from lister.review import BatchState
+
+    main(["split", str(SAMPLES / "fronts_01.jpg"), "-o", str(tmp_path)])
+    b = BatchState(tmp_path)  # writes review.json with blank cards
+    assert b.state["cards"][0]["title"] == ""
+    mine = dict(b.state["cards"][1])
+    mine["info"] = {**mine["info"], "subject": "My own words"}
+    b.update({"cards": [mine]})
+
+    cards = json.loads((tmp_path / "manifest.json").read_text())["cards"]
+    info = dict(category="non_sport", year="1978", set_name="The Muppet Show", subject="Fozzie Bear",
+                card_number="60", condition="excellent", confidence="high", uncertain_fields=[], notes="")
+    cards = [{**c, "info": info, "title": "1978 The Muppet Show Fozzie Bear #60", "error": None} for c in cards]
+    (tmp_path / "cards.json").write_text(json.dumps({"cards": cards}))
+    later = time.time() + 5
+    os.utime(tmp_path / "cards.json", (later, later))
+
+    state = b.payload()  # what the page loads
+    assert state["cards"][0]["title"] == "1978 The Muppet Show Fozzie Bear #60"
+    assert state["cards"][0]["confidence"] == "high"
+    assert state["cards"][1]["info"]["subject"] == "My own words"  # edits kept
+    # And a fresh start (e.g. restarting lister review) sees the same.
+    again = BatchState(tmp_path).state
+    assert again["cards"][0]["title"].startswith("1978") and again["cards"][1]["info"]["subject"] == "My own words"

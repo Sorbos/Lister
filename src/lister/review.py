@@ -50,24 +50,32 @@ def _blank_info() -> dict:
     return info
 
 
+def _card_from_identified(c: dict) -> dict:
+    """The Claude-provided parts of a review card, from one cards.json entry."""
+    ident = c.get("info") or {}
+    info = _blank_info()
+    info.update({k: ident[k] for k in EDITABLE if k in ident})
+    return {
+        "info": info,
+        "confidence": ident.get("confidence"),
+        "uncertain": ident.get("uncertain_fields", []),
+        "notes": ident.get("notes") or c.get("error") or "",
+        "title": c.get("title") or "",
+    }
+
+
 def initial_state(folder: Path) -> dict:
     """Build review state from cards.json (identified) or manifest.json (images only)."""
     src = folder / "cards.json"
     cards = json.loads(src.read_text())["cards"] if src.exists() else json.loads((folder / "manifest.json").read_text())["cards"]
     out = []
     for c in cards:
-        ident = c.get("info") or {}
-        info = _blank_info()
-        info.update({k: ident[k] for k in EDITABLE if k in ident})
         out.append({
             "position": c["position"],
             "front": c["front"],
             "back": c.get("back"),
-            "info": info,
-            "confidence": ident.get("confidence"),
-            "uncertain": ident.get("uncertain_fields", []),
-            "notes": ident.get("notes") or c.get("error") or "",
-            "title": c.get("title") or "",
+            **_card_from_identified(c),
+            "edited": False,
             "title_custom": False,
             "listing": dict(DEFAULT_LISTING),
             "skip": False,
@@ -187,7 +195,10 @@ class BatchState:
         state.setdefault("schedule", dict(DEFAULT_SCHEDULE))
         for c in state["cards"]:
             c["listing"].setdefault("start_time", None)
+        if not self.path.exists() and (self.folder / "cards.json").exists():
+            state["cards_json_mtime"] = (self.folder / "cards.json").stat().st_mtime
         self.state = normalise(state)
+        self.merge_identified()
         self._save()
         self.images = {c[k] for c in self.state["cards"] for k in ("front", "back") if c.get(k)}
 
@@ -199,7 +210,34 @@ class BatchState:
         except (ValueError, OSError):
             return None
 
+    def merge_identified(self) -> bool:
+        """If Claude's results (cards.json) are newer than what the review last took in, fill them into
+        every card you haven't edited or approved. Your own edits are never overwritten."""
+        f = self.folder / "cards.json"
+        try:
+            mtime = f.stat().st_mtime
+        except FileNotFoundError:
+            return False
+        if self.state.get("cards_json_mtime") == mtime:
+            return False
+        try:
+            identified = {c["position"]: c for c in json.loads(f.read_text())["cards"]}
+        except (ValueError, KeyError, OSError):
+            return False  # half-written; try again next time
+        for card in self.state["cards"]:
+            new = identified.get(card["position"])
+            if new is None or card.get("edited") or card.get("approved"):
+                continue
+            card.update(_card_from_identified(new))
+            card["title_custom"] = False
+        self.state["cards_json_mtime"] = mtime
+        self.state = normalise(self.state)
+        return True
+
     def payload(self) -> dict:
+        with self.lock:
+            if self.merge_identified():
+                self._save()
         return {**self.state, "folder": self.folder.name, "max_len": MAX_LEN, "claude_cost_usd": self.claude_cost()}
 
     def _save(self) -> None:
@@ -215,7 +253,11 @@ class BatchState:
                 card = by_pos.get(incoming.get("position"))
                 if card is None:
                     continue
-                card["info"].update({k: incoming["info"].get(k) for k in EDITABLE if k in incoming.get("info", {})})
+                new_info = {k: incoming["info"].get(k) for k in EDITABLE if k in incoming.get("info", {})}
+                if any(new_info[k] != card["info"].get(k) for k in new_info) or (
+                        incoming.get("title_custom") and incoming.get("title") != card.get("title")):
+                    card["edited"] = True  # Claude's later results won't overwrite this card
+                card["info"].update(new_info)
                 card["listing"].update({k: incoming["listing"].get(k) for k in DEFAULT_LISTING if k in incoming.get("listing", {})})
                 for k in ("title", "title_custom", "skip", "approved"):
                     if k in incoming:
