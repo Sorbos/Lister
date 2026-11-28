@@ -2,7 +2,9 @@
 
 - inbox: the folder Lister watches for scans (default ROOT/inbox)
 - wait_minutes: how long a lone scan waits for its back scan
-- listing_defaults: format/prices/length new inventory cards start with (None = auction, $0.99, 7 days)
+- listing_defaults: format/prices/length new inventory cards start with (None = auction, $0.99, 7 days),
+  plus shipping_cost: the stock shipping cost for every card that doesn't set its own
+- stock_description: text at the end of every listing's description
 """
 
 from __future__ import annotations
@@ -12,7 +14,9 @@ import os
 import re
 from pathlib import Path
 
-DEFAULTS = {"inbox": None, "wait_minutes": 10, "listing_defaults": None}
+STOCK_DESCRIPTION = ("The photos are scans of the actual card you will receive. "
+                     "Please look at them closely for corners, edges and surface.")
+DEFAULTS = {"inbox": None, "wait_minutes": 10, "listing_defaults": None, "stock_description": STOCK_DESCRIPTION}
 BUSY_FOLDER = 20  # this many images already in a folder → ask before watching it
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 

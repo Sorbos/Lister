@@ -38,6 +38,7 @@ DEFAULT_LISTING = {
     "reserve": None,  # auction, optional
     "duration_days": 7,  # auction
     "start_time": None,  # UTC ISO string ("2026-11-23T00:05:00Z"); None = start immediately
+    "shipping_cost": None,  # None = the stock shipping cost from Settings (or the shipping policy's own)
 }
 MAX_SCHEDULE_AHEAD = timedelta(days=21)  # eBay allows scheduling up to 3 weeks ahead
 
@@ -138,6 +139,8 @@ def validate_card(card: dict, now: datetime | None = None) -> list[str]:
             errs.append("Buy It Now must be at least 30% above the starting price (eBay rule)")
         if lst["reserve"] and lst["reserve"] <= start:
             errs.append("Reserve must be above the starting price")
+    if lst.get("shipping_cost") is not None and lst["shipping_cost"] < 0:
+        errs.append("Shipping can't be negative")
     start_time = parse_time(lst.get("start_time"))
     if start_time:
         now = now or datetime.now(timezone.utc)
@@ -503,7 +506,7 @@ class ReviewServer:
         cards = []
         for c in inventory.load(self.folder, stage):
             pub = {k: c.get(k) for k in ("id", "title", "title_custom", "listing", "source", "ebay", "added_at",
-                                         "sold_at")}
+                                         "sold_at", "description")}
             pub["info"] = {k: c["info"].get(k) for k in ("subject", "year", "set_name", "card_number", "team",
                                                           "condition", "graded", "grader", "grade", "rookie")}
             pub["errors"] = c.get("errors", [])
@@ -514,7 +517,12 @@ class ReviewServer:
             cards.append(pub)
         with self._job_lock:
             job = dict(self.job) if self.job else None
-        return {"stage": stage, "cards": cards, "counts": inventory.counts(self.folder), "max_len": MAX_LEN,
+        from . import settings
+
+        cfg = settings.load(self.folder)
+        stock = {"shipping_cost": (cfg["listing_defaults"] or {}).get("shipping_cost"),
+                 "has_description": bool((cfg["stock_description"] or "").strip())}
+        return {"stage": stage, "cards": cards, "counts": inventory.counts(self.folder), "max_len": MAX_LEN, "stock": stock,
                 "ebay": self.ebay_status() if stage == "inventory" else None, "job": job}
 
     def inventory_action(self, body: dict) -> dict:
@@ -529,6 +537,8 @@ class ReviewServer:
                 inventory.bulk(self.folder, ids, body.get("listing") or {})
             elif action == "stagger":
                 inventory.stagger(self.folder, ids, body.get("first_start"), body.get("interval_minutes"))
+            elif action == "delete":
+                inventory.delete(self.folder, ids)
             elif action == "rotate":
                 inventory.rotate(self.folder, ids, body.get("side", "front"), body.get("degrees", 90))
             elif action == "clear_start":
@@ -619,7 +629,9 @@ class ReviewServer:
         cfg = settings.load(self.folder)
         inbox = settings.inbox(self.folder)
         return {"inbox": str(inbox), "using_default": not cfg["inbox"], "exists": inbox.is_dir(),
-                "waiting_images": settings.image_count(inbox), "wait_minutes": cfg["wait_minutes"]}
+                "waiting_images": settings.image_count(inbox), "wait_minutes": cfg["wait_minutes"],
+                "stock_description": cfg["stock_description"],
+                "listing_defaults": {**DEFAULT_LISTING, **(cfg["listing_defaults"] or {})}}
 
     def update_settings(self, body: dict) -> dict:
         from . import settings
@@ -640,6 +652,27 @@ class ReviewServer:
                 message = f"Lone scans now wait {minutes} minute(s) for their back."
             else:
                 result, message = "error", "Pick between 1 and 120 minutes."
+        if "stock_description" in body:
+            text = str(body["stock_description"] or "")
+            if len(text) > 4000:
+                result, message = "error", "Keep the stock description under 4000 characters."
+            else:
+                settings.save(self.folder, {"stock_description": text})
+                message = "Stock description saved. It's added to the end of every listing's description."
+        if "listing_defaults" in body:
+            from .inventory import _clean_listing
+
+            d = _clean_listing({**DEFAULT_LISTING, **{k: v for k, v in (body["listing_defaults"] or {}).items()
+                                                      if k in DEFAULT_LISTING}, "start_time": None})
+            errs = validate_card({"title": "x", "info": {"subject": "x"}, "listing": d})
+            if errs:
+                result, message = "error", "; ".join(errs)
+            else:
+                d.pop("start_time", None)
+                settings.save(self.folder, {"listing_defaults": d})
+                ship = "the shipping policy's own cost" if d["shipping_cost"] is None else f"${d['shipping_cost']:.2f}"
+                message = (f"Saved. New inventory cards start with these settings; stock shipping is {ship} "
+                           "for every card without its own shipping cost.")
         return {**self.settings_payload(), "result": result, "message": message}
 
     def _resolve(self, path: str) -> tuple[BatchState | None, str]:

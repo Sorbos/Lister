@@ -157,11 +157,23 @@ read-only. Edits are saved as you go, so you can stop and come back.
 - **Staggered endings:** pick when the first card starts and the gap (e.g. 3 minutes), then
   *Stagger selected*. It runs across all selected cards in the order shown, across batches, so
   18 seven-day auctions starting Sun 7:00 PM end 7:00, 7:03, … 7:51 PM a week later.
-- Change any single card's title, prices, length or start time on its row.
+- Change any single card's title, prices, length, shipping or start time on its row, and add a
+  **description for that card** (e.g. "small crease on the back").
+- **Shipping:** set a stock shipping cost in Settings; every card without its own cost uses it.
+  Override it per card, or for many cards with *Set shipping for selected* (empty = back to stock).
+  It's sent to eBay as an override of the first domestic service in your shipping policy, so that
+  service needs to be flat-rate.
+- **Delete** removes the selected cards from the inventory after a confirmation. They're moved to
+  `C:\\Lister\\deleted\\`, not erased, so a mistake can be undone in File Explorer.
 - Problems show under each card and block listing (no price, title over 80 characters, Buy It
   Now less than 30% above the start, a start time in the past or more than 3 weeks ahead).
 - **Preview** shows exactly what would be sent to eBay; **List on eBay** lists the selected
   cards (with a confirmation), showing progress as it goes.
+
+**Listing description:** each listing's description is the title, then the card's own
+description, the card details (year, set, number, condition…), then your **stock description**
+from Settings (e.g. how you ship, combined shipping). Settings also holds the defaults new
+inventory cards start with (format, starting price, length, fixed price).
 
 **Listed:** cards live or scheduled on eBay, with the eBay item number and end time. Mark
 **Sold** (moves to `C:\Lister\sold`) or **Didn't sell → back to inventory** to re-price and

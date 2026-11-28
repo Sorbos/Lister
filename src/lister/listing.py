@@ -176,7 +176,14 @@ def build_aspects(info: dict, aspects_meta: list[dict] | None, extra: dict | Non
     return out, warnings
 
 
-def build_description(card: dict) -> str:
+def _paragraphs(text: str) -> str:
+    """Plain text from the app → safe HTML paragraphs (blank line = new paragraph)."""
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text or "") if b.strip()]
+    return "".join("<p>" + html.escape(b).replace("\n", "<br>") + "</p>" for b in blocks)
+
+
+def build_description(card: dict, stock_description: str = "") -> str:
+    """Title, then the card's own description, the card details, and the stock description."""
     info = card["info"]
     rows = [
         ("Year", info.get("year")), ("Manufacturer", info.get("manufacturer")), ("Set", info.get("set_name")),
@@ -191,9 +198,8 @@ def build_description(card: dict) -> str:
     else:
         rows.append(("Condition", CONDITION_LABEL.get(info.get("condition"), "")))
     table = "".join(f"<tr><td><b>{html.escape(k)}</b></td><td>{html.escape(str(v))}</td></tr>" for k, v in rows if v)
-    return (f"<h2>{html.escape(card['title'])}</h2><table>{table}</table>"
-            "<p>The photos are scans of the actual card you will receive. Please look at them closely "
-            "for corners, edges and surface.</p>")
+    return (f"<h2>{html.escape(card['title'])}</h2>{_paragraphs(card.get('description', ''))}"
+            f"<table>{table}</table>{_paragraphs(stock_description)}")
 
 
 def build_item(card: dict, image_urls: list[str], policy: dict | None, aspects_meta, settings: EbaySettings):
@@ -211,7 +217,16 @@ def _money(v, currency):
     return {"value": f"{float(v):.2f}", "currency": currency}
 
 
-def build_offer(card: dict, sku: str, settings: EbaySettings, send_start_time: bool) -> dict:
+def effective_shipping(card: dict, stock: dict | None) -> float | None:
+    """The card's own shipping cost, else the stock shipping cost, else None (use the policy's)."""
+    own = card["listing"].get("shipping_cost")
+    if own is not None:
+        return own
+    return ((stock or {}).get("listing_defaults") or {}).get("shipping_cost")
+
+
+def build_offer(card: dict, sku: str, settings: EbaySettings, send_start_time: bool, stock: dict | None = None) -> dict:
+    """stock: the Lister settings (stock description, stock shipping cost)."""
     lst = card["listing"]
     cur = settings.currency
     offer = {
@@ -219,7 +234,7 @@ def build_offer(card: dict, sku: str, settings: EbaySettings, send_start_time: b
         "marketplaceId": settings.marketplace,
         "availableQuantity": 1,
         "categoryId": category_for(card["info"]),
-        "listingDescription": build_description(card),
+        "listingDescription": build_description(card, (stock or {}).get("stock_description", "")),
         "merchantLocationKey": settings.location_key,
         "listingPolicies": {"fulfillmentPolicyId": settings.fulfillment_policy_id,
                             "paymentPolicyId": settings.payment_policy_id,
@@ -235,6 +250,11 @@ def build_offer(card: dict, sku: str, settings: EbaySettings, send_start_time: b
     else:
         offer.update(format="FIXED_PRICE", listingDuration="GTC",
                      pricingSummary={"price": _money(lst["price"], cur)})
+    shipping = effective_shipping(card, stock)
+    if shipping is not None:
+        # Overrides the cost of the first domestic service in your shipping policy (needs a flat-rate service).
+        offer["listingPolicies"]["shippingCostOverrides"] = [{
+            "priority": 1, "shippingServiceType": "DOMESTIC", "shippingCost": _money(shipping, cur)}]
     if send_start_time and lst.get("start_time"):
         offer["listingStartDate"] = parse_time(lst["start_time"]).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     return offer
@@ -275,6 +295,9 @@ def list_cards(root: str | Path, ids: list[str], settings: EbaySettings, client=
         lines = [f"  {c['title'] or c['id']}: {'; '.join(e)}" for c, e in problems]
         raise ListingError("Fix these in the inventory first:\n" + "\n".join(lines))
 
+    from . import settings as lister_settings
+
+    stock = lister_settings.load(root)
     local_mode = settings.schedule_mode == "local"
     meta: dict[str, tuple] = {}
     previews, queue, done = [], [], 0
@@ -309,7 +332,7 @@ def list_cards(root: str | Path, ids: list[str], settings: EbaySettings, client=
                 inventory.save(card)
 
         item, warnings = build_item(card, images, policy, aspects_meta, settings)
-        offer = build_offer(card, sku, settings, send_start_time=not local_mode)
+        offer = build_offer(card, sku, settings, send_start_time=not local_mode, stock=stock)
         for w in warnings:
             progress(f"{name}: note: {w}")
 

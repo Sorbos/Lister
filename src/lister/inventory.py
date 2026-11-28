@@ -3,6 +3,7 @@
 ROOT/inventory/<card id>/   ready to price, schedule and list
 ROOT/listed/<card id>/      live on eBay (or scheduled)
 ROOT/sold/<card id>/        sold
+ROOT/deleted/<card id>/     deleted from the inventory (kept on disk in case of a mistake)
 
 Each card folder holds front.jpg, back.jpg (if scanned) and card.json:
   id, title, title_custom, info (card details), listing (format, prices, length, start time),
@@ -56,6 +57,8 @@ def _write(folder: Path, card: dict) -> None:
 def send_batch(batch_folder: Path, cards: list[dict], root: Path, listing_defaults: dict | None = None) -> list[str]:
     """Copy each approved (not skipped) card of a finished batch into ROOT/inventory. Returns the new ids."""
     batch_folder = Path(batch_folder)
+    # Shipping isn't copied in: an empty card value follows the stock shipping cost, even when that changes.
+    defaults = {k: v for k, v in (listing_defaults or {}).items() if k in DEFAULT_LISTING and k != "shipping_cost"}
     added = []
     for c in cards:
         if c.get("skip") or not c.get("approved"):
@@ -77,7 +80,8 @@ def send_batch(batch_folder: Path, cards: list[dict], root: Path, listing_defaul
             "info": c["info"],
             "front": files.get("front"),
             "back": files.get("back"),
-            "listing": {**DEFAULT_LISTING, **(listing_defaults or {}), "start_time": None},
+            "listing": _clean_listing({**DEFAULT_LISTING, **defaults, "start_time": None}),
+            "description": "",
             "source": {"batch": batch_folder.name, "position": c["position"]},
             "added_at": _now(),
             "ebay": None,
@@ -141,7 +145,7 @@ LISTING_KEYS = tuple(DEFAULT_LISTING)
 
 
 def _clean_listing(lst: dict) -> dict:
-    for k in ("price", "start_price", "buy_it_now", "reserve"):
+    for k in ("price", "start_price", "buy_it_now", "reserve", "shipping_cost"):
         lst[k] = _num(lst.get(k))
     lst["duration_days"] = int(lst.get("duration_days") or 7)
     if lst.get("format") not in ("auction", "fixed_price"):
@@ -152,9 +156,11 @@ def _clean_listing(lst: dict) -> dict:
 
 
 def update(root: Path, changes: list[dict]) -> None:
-    """Per-card edits: {id, title?, title_custom?, listing: {...}}."""
+    """Per-card edits: {id, title?, title_custom?, description?, listing: {...}}."""
     for ch in changes:
         card = get(root, ch.get("id", ""), "inventory")
+        if "description" in ch:
+            card["description"] = str(ch["description"] or "")[:4000]
         if "listing" in ch:
             card["listing"].update({k: ch["listing"][k] for k in LISTING_KEYS if k in ch["listing"]})
         if "title_custom" in ch:
@@ -212,6 +218,23 @@ def rotate(root: Path, ids: list[str], side: str = "front", degrees: int = 90) -
         if card.get("ebay"):
             card["ebay"].pop("image_urls", None)  # photos changed: upload them again
         save(card)
+
+
+def delete(root: Path, ids: list[str]) -> int:
+    """Remove cards from the inventory into ROOT/deleted (not erased, in case of a mistake)."""
+    trash = Path(root) / "deleted"
+    trash.mkdir(parents=True, exist_ok=True)
+    for card_id in ids:
+        card = get(root, card_id, "inventory")
+        dest = trash / card["id"]
+        n = 2
+        while dest.exists():
+            dest = trash / f"{card['id']}-{n}"
+            n += 1
+        card["deleted_at"] = _now()
+        save(card)
+        shutil.move(str(card["_folder"]), dest)
+    return len(ids)
 
 
 # ---------------------------------------------------------------- moving between stages

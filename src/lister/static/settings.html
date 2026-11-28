@@ -26,6 +26,10 @@ label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); margin-to
 input { font: inherit; color: var(--text); width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--input); }
 input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 input[type=number] { width: 100px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 10px; }
+.grid input[type=number], select { width: 100%; }
+textarea, select { font: inherit; color: var(--text); width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+                   border-radius: 6px; background: var(--input); resize: vertical; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
 button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
@@ -66,6 +70,31 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <div class="row"><button class="primary" id="saveWait">Save</button></div>
     <div class="msg hide" id="waitMsg"></div>
   </section>
+
+  <section>
+    <h2>Stock description</h2>
+    <p>Added to the end of every listing's description, after the card's own description (set per card in
+       the Inventory) and the card details. Leave a blank line between paragraphs.</p>
+    <label>Text <textarea id="stockDesc" rows="6"></textarea></label>
+    <div class="row"><button class="primary" id="saveDesc">Save</button></div>
+    <div class="msg hide" id="descMsg"></div>
+  </section>
+
+  <section>
+    <h2>Defaults for listings</h2>
+    <p>New inventory cards start with these settings (change them per card or in bulk in the Inventory).
+       <b>Stock shipping</b> applies to every card without its own shipping cost, including cards already in
+       the inventory. Leave it empty to use the cost in your eBay shipping policy.</p>
+    <div class="grid">
+      <label>Format <select id="dFormat"><option value="auction">Auction</option><option value="fixed_price">Fixed price</option></select></label>
+      <label class="auction">Starting price $ <input type="number" id="dStart" min="0" step="0.01"></label>
+      <label class="auction">Length <select id="dDays"><option>1</option><option>3</option><option>5</option><option>7</option><option>10</option></select></label>
+      <label class="fixed">Price $ <input type="number" id="dPrice" min="0" step="0.01"></label>
+      <label>Stock shipping $ <input type="number" id="dShip" min="0" step="0.01" placeholder="policy's cost"></label>
+    </div>
+    <div class="row"><button class="primary" id="saveDefaults">Save</button></div>
+    <div class="msg hide" id="defMsg"></div>
+  </section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -74,7 +103,33 @@ function render(s) {
   $("#current").textContent = s.inbox + (s.using_default ? "  (default)" : "") +
     (s.exists ? (s.waiting_images ? `  · ${s.waiting_images} scan(s) waiting` : "") : "  · folder not found");
   $("#wait").value = s.wait_minutes;
+  if (document.activeElement !== $("#stockDesc")) $("#stockDesc").value = s.stock_description || "";
+  const d = s.listing_defaults || {};
+  $("#dFormat").value = d.format || "auction";
+  $("#dStart").value = d.start_price ?? "";
+  $("#dDays").value = String(d.duration_days || 7);
+  $("#dPrice").value = d.price ?? "";
+  $("#dShip").value = d.shipping_cost ?? "";
+  showFormat();
 }
+function showFormat() {
+  const auction = $("#dFormat").value === "auction";
+  document.querySelectorAll(".auction").forEach(el => el.classList.toggle("hide", !auction));
+  document.querySelectorAll(".fixed").forEach(el => el.classList.toggle("hide", auction));
+}
+$("#dFormat").onchange = showFormat;
+const num = id => $(id).value === "" ? null : Number($(id).value);
+$("#saveDesc").onclick = async () => {
+  try { const s = await post({ stock_description: $("#stockDesc").value }); show($("#descMsg"), s.result, s.message); }
+  catch (e) { show($("#descMsg"), "error", "Couldn't save (" + e.message + ")."); }
+};
+$("#saveDefaults").onclick = async () => {
+  try {
+    const s = await post({ listing_defaults: { format: $("#dFormat").value, start_price: num("#dStart"),
+      duration_days: Number($("#dDays").value), price: num("#dPrice"), shipping_cost: num("#dShip") } });
+    show($("#defMsg"), s.result, s.message); if (s.result === "ok") render(s);
+  } catch (e) { show($("#defMsg"), "error", "Couldn't save (" + e.message + ")."); }
+};
 async function post(body) {
   const r = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error("HTTP " + r.status);

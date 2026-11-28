@@ -60,6 +60,10 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 8px; margin-top: 6px; }
 .grid input, .grid select { min-width: 0; }
 .ends { font-size: 12px; color: var(--muted); margin-top: 6px; }
+label.desc { margin-top: 8px; }
+textarea { font: inherit; color: var(--text); width: 100%; padding: 6px 8px; border: 1px solid var(--line);
+           border-radius: 6px; background: var(--input); resize: vertical; }
+button.danger { color: var(--err); border-color: var(--err); }
 .errors { color: var(--err); font-size: 13px; margin: 6px 0 0; padding: 0; list-style: none; }
 .job { display: grid; gap: 6px; }
 .bar { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
@@ -69,6 +73,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .msg { font-size: 13px; padding: 8px 10px; border-radius: 6px; }
 .msg.err { background: var(--err-bg); color: var(--err); }
 .msg.warn { background: var(--warn-bg); color: var(--warn); }
+.msg.ok { background: var(--ok-bg); color: var(--ok); }
 .empty { color: var(--muted); padding: 20px; text-align: center; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 a { color: var(--accent); }
@@ -96,6 +101,8 @@ dialog::backdrop { background: rgb(0 0 0 / .75); }
 <script>
 const STAGE = "{{STAGE}}";
 const DAYS = [1, 3, 5, 7, 10];
+const stockShip = () => data && data.stock && data.stock.shipping_cost != null
+  ? `stock: $${Number(data.stock.shipping_cost).toFixed(2)}` : "policy's cost";
 let data = null, selected = new Set(), timer = null, polling = null, pending = new Map();
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
@@ -164,6 +171,7 @@ function listingFields(card) {
     num("buy_it_now", "Buy It Now $", "optional");
     num("reserve", "Reserve $", "optional");
   } else num("price", "Price $");
+  num("shipping_cost", "Shipping $", stockShip());
   field("Starts (empty = right away)", h("input", { type: "datetime-local", value: toLocal(l.start_time), "data-role": "start",
     oninput: e => { l.start_time = fromLocal(e.target.value); queueEdit(card, { listing: { start_time: l.start_time } }); updateEnds(card); } }));
   return wrap;
@@ -190,6 +198,10 @@ function renderCard(card) {
       h("div", { class: "meta" }, src, card.relisted ? h("span", { class: "chip warn", style: "margin-left:6px" }, `relisting (${card.relisted} before)`) : null),
       listingFields(card),
       h("div", { class: "ends", "data-role": "ends" }, endsText(card.listing)),
+      h("label", { class: "desc" }, "Description for this card (shown before your stock description)",
+        h("textarea", { rows: 2, placeholder: "e.g. small crease on the back, top-left corner", "data-role": "desc",
+          oninput: e => { card.description = e.target.value; queueEdit(card, { description: card.description }); } },
+          card.description || "")),
       h("ul", { class: "errors", "data-role": "errors" }, (card.errors || []).map(e => h("li", {}, "• " + e))));
   } else {
     const eb = card.ebay || {}, l = eb.listing || card.listing;
@@ -256,6 +268,18 @@ function bulkPanel() {
     after(await api({ action: "bulk", ids, listing }));
   } }, "Apply to selected"));
 
+  const shipping = { value: "" };
+  const ship = h("div", { class: "row", style: "margin-top:10px" },
+    h("label", {}, "Shipping $", h("input", { type: "number", min: "0", step: "0.01", placeholder: stockShip(),
+      oninput: e => shipping.value = e.target.value })),
+    h("button", { class: "primary", onclick: async () => {
+      const ids = [...selected]; if (!ids.length) return flash("Select some cards first.", "warn");
+      const v = shipping.value === "" ? null : Number(shipping.value);
+      after(await api({ action: "bulk", ids, listing: { shipping_cost: v } }));
+      flash(v == null ? `${ids.length} card(s) now use the stock shipping cost.`
+                      : `Shipping set to $${v.toFixed(2)} on ${ids.length} card(s).`, "ok");
+    } }, "Set shipping for selected"),
+    h("span", { class: "meta" }, "Empty = use the stock shipping cost (Settings)."));
   const s = h("div", { class: "row", style: "margin-top:10px" },
     h("label", { class: "wide" }, "First card starts", h("input", { type: "datetime-local", value: sched.first, oninput: e => sched.first = e.target.value })),
     h("label", {}, "Then every (minutes)", h("input", { type: "number", min: "0", step: "1", value: sched.interval, oninput: e => sched.interval = Number(e.target.value) })),
@@ -268,7 +292,7 @@ function bulkPanel() {
   return h("details", { class: "panel", id: "bulk", open: window.innerWidth > 700 || null },
     h("summary", {}, "Set many cards at once"),
     h("p", { class: "meta" }, "Tick cards below, then apply prices and length, or stagger their start times in the order shown, so auctions end a few minutes apart."),
-    f, s);
+    f, ship, s);
 }
 const order = () => data.cards.map(c => c.id);
 
@@ -291,6 +315,8 @@ function renderToolbar() {
         "backs",
         h("button", { disabled: !n, title: "Turn selected backs left", onclick: () => turn([...selected], "back", 270) }, "⟲"),
         h("button", { disabled: !n, title: "Turn selected backs right", onclick: () => turn([...selected], "back", 90) }, "⟳")),
+      h("button", { class: "danger", disabled: !n || !!running(), onclick: () => removeCards([...selected]) },
+        n ? `Delete ${n}` : "Delete"),
       bad ? h("span", { class: "chip err" }, `${bad} selected need fixing`) : null,
       h("button", { disabled: !n || !!running(), onclick: () => startList(true) }, "Preview"),
       h("button", { class: "primary", disabled: !n || !!bad || !eb.ready || !!running(), title: eb.ready ? "" : eb.message,
@@ -301,6 +327,14 @@ function renderToolbar() {
     ] : []].flat().filter(Boolean));
 }
 const running = () => data.job && data.job.running;
+async function removeCards(ids) {
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} card(s) from the inventory? They're moved to the "deleted" folder ` +
+               "in your Lister folder, not erased.")) return;
+  selected.clear();
+  after(await api({ action: "delete", ids }));
+  flash(`Deleted ${ids.length} card(s).`, "ok");
+}
 async function turn(ids, side, degrees) {
   if (!ids.length) return;
   try {
