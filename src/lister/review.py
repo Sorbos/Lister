@@ -340,7 +340,7 @@ class ReviewServer:
         folder = self.batches_dir / name
         if "/" in name or "\\" in name or name.startswith(".") or not (folder / "manifest.json").exists():
             return None
-        if batch_status(folder)["stage"] == "reading":
+        if batch_status(folder)["stage"] in ("reading", "queued"):
             return None
         with self._lock:
             b = self.batches.get(name)
@@ -348,10 +348,55 @@ class ReviewServer:
                 b = self.batches[name] = BatchState(folder)
             return b
 
-    def index_html(self) -> bytes:
+    def batch_image(self, url_path: str) -> Path | None:
+        """/b/<batch>/img/<file> → the file, only if it's a card picture listed in that batch's manifest."""
+        name, _, rest = unquote(url_path.split("?")[0])[3:].partition("/img/")
+        folder = self.batches_dir / name
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            return None
+        try:
+            manifest = json.loads((folder / "manifest.json").read_text())
+        except (FileNotFoundError, ValueError):
+            return None
+        allowed = {c[k] for c in manifest.get("cards", []) for k in ("front", "back") if c.get(k)}
+        return folder / rest if rest in allowed else None
+
+    def activity_html(self, folders: list[Path]) -> str:
+        """What's happening right now: scans waiting, current step, cards being read."""
+        import time
+
+        try:
+            act = json.loads((self.folder / "activity.json").read_text())
+        except (FileNotFoundError, ValueError):
+            act = None
+        if act is None or time.time() - act.get("time", 0) > 15:
+            return ('<div class="activity off">Lister isn&#39;t watching the scans folder right now. '
+                    "Start it with <b>Lister Watch</b> (or <code>lister watch</code>) to process new scans.</div>")
+        lines = []
+        waiting = act.get("waiting", 0)
+        lines.append(f"<b>{waiting}</b> scan{'s' if waiting != 1 else ''} waiting in the scans folder" if waiting
+                     else "Scans folder is empty. Waiting for new scans.")
+        if act.get("now"):
+            lines.append(f'<span class="spin"></span>{html_escape(act["now"])}')
+        reading = [f for f in folders if batch_status(f)["stage"] == "reading"]
+        queued = [f for f in folders if batch_status(f)["stage"] == "queued"]
+        if reading or queued:
+            done = sum(batch_status(f).get("done", 0) for f in reading)
+            total = sum(batch_status(f).get("total", 0) for f in reading)
+            bits = [f"Claude is reading {len(reading)} batch{'es' if len(reading) != 1 else ''}"
+                    + (f" (card {min(done + 1, total)} of {total})" if total else "")] if reading else []
+            if queued:
+                bits.append(f"{len(queued)} more batch{'es' if len(queued) != 1 else ''} in line")
+            lines.append('<span class="spin"></span>' + " · ".join(bits))
+        return '<div class="activity">' + "<br>".join(lines) + "</div>"
+
+    def index_html(self, partial: bool = False) -> bytes:
         rows = []
+        # Newest first, in a fixed order (names start with date, time and scan name), so rows don't jump.
         folders = sorted((p for p in self.batches_dir.glob("*") if (p / "manifest.json").exists()),
-                         key=lambda p: p.stat().st_mtime, reverse=True) if self.batches_dir.exists() else []
+                         key=lambda p: p.name, reverse=True) if self.batches_dir.exists() else []
+        queue = sorted((f for f in folders if batch_status(f)["stage"] == "queued"),
+                       key=lambda f: batch_status(f).get("queued_at", 0))
         for f in folders:
             st = batch_status(f)
             n = len(json.loads((f / "manifest.json").read_text()).get("cards", []))
@@ -367,8 +412,21 @@ class ReviewServer:
                 cost = json.loads((f / "cards.json").read_text()).get("cost_usd")
             name = html_escape(f.name)
             note = html_escape(st.get("message") or "")
+            thumb = f'<img src="b/{name}/img/card_01_front.jpg" alt="">'
             if st["stage"] == "reading":
-                status, link = f'<span class="chip warn">reading… {note}</span>', name
+                total = st.get("total") or n
+                done = st.get("done", 0)
+                pct = round(100 * done / total) if total else 0
+                label = f"Reading card {min(done + 1, total)} of {total}" if done < total else "Finishing up"
+                if "done" not in st:
+                    label, pct = "Cutting out cards", 0
+                status = (f'<div class="progress"><div class="bar"><span style="width:{pct}%"></span></div>'
+                          f'<small>{label}</small></div>')
+                link = name
+            elif st["stage"] == "queued":
+                pos = queue.index(f) + 1 if f in queue else 1
+                nth = {1: "next", 2: "2nd in line", 3: "3rd in line"}.get(pos, f"{pos}th in line")
+                status, link = f'<span class="chip warn">{n} cards · waiting to be read ({nth})</span>', name
             elif st["stage"] == "error":
                 status, link = f'<span class="chip err">{note or "problem"}</span>', f'<a href="b/{name}/">{name}</a>'
             else:
@@ -376,22 +434,24 @@ class ReviewServer:
                 if note:
                     bits.append(note)
                 status, link = '<span class="chip">' + " · ".join(bits) + "</span>", f'<a href="b/{name}/">{name}</a>'
-            thumb = f'<img src="b/{name}/img/card_01_front.jpg" alt="">' if st["stage"] != "reading" else ""
             money = "" if cost is None else (f"${cost:.2f}" if cost >= 0.995 else f"{cost * 100:.1f}¢")
-            rows.append(f"<li>{thumb}<div><b>{link}</b><br>{status} <small>{money}</small></div></li>")
+            rows.append(f'<li>{thumb}<div class="grow"><b>{link}</b><br>{status} <small>{money}</small></div></li>')
         problems = []
         pdir = self.folder / "problems"
         if pdir.exists():
             for note in sorted(pdir.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
                 problems.append(f"<li><b>{html_escape(note.stem)}</b>: {html_escape(note.read_text().strip())}</li>")
-        page = resources.files("lister").joinpath("static/hub.html").read_text()
-        page = page.replace("{{ROWS}}", "\n".join(rows) or "<p>No batches yet. Scan into the inbox folder.</p>")
+        live = (self.activity_html(folders)
+                + "<ul>" + ("\n".join(rows) or "<p>No batches yet. Scan into the scans folder.</p>") + "</ul>"
+                + (("<h2>Problems</h2><ul class=problems>" + "".join(problems) + "</ul>") if problems else ""))
+        if partial:
+            return live.encode()
         from . import settings
 
+        page = resources.files("lister").joinpath("static/hub.html").read_text()
         page = page.replace("{{NAV}}", nav_html("batches"))
         page = page.replace("{{INBOX}}", html_escape(str(settings.inbox(self.folder))))
-        page = page.replace("{{PROBLEMS}}", ("<h2>Problems</h2><ul class=problems>" + "".join(problems) + "</ul>")
-                            if problems else "")
+        page = page.replace("{{LIVE}}", live)
         return page.encode()
 
     def costs_html(self) -> bytes:
@@ -477,7 +537,8 @@ class ReviewServer:
 
             def do_GET(self):
                 if server.hub and self.path.split("?")[0] in ("/", "/index.html"):
-                    return self._send(200, server.index_html(), "text/html; charset=utf-8")
+                    partial = "partial=1" in self.path
+                    return self._send(200, server.index_html(partial), "text/html; charset=utf-8")
                 if server.hub and self.path.split("?")[0] == "/settings":
                     html = resources.files("lister").joinpath("static/settings.html").read_text()
                     return self._send(200, html.replace("{{NAV}}", nav_html("settings")).encode(),
@@ -488,6 +549,12 @@ class ReviewServer:
                     return self._json(server.settings_payload())
                 if server.hub and self.path.startswith("/b/") and self.path.count("/") == 2:
                     return self._send(301, b"", "text/plain", {"Location": self.path + "/"})
+                if server.hub and self.path.startswith("/b/") and "/img/" in self.path:
+                    # Pictures are shown as soon as cards are cut out, even while Claude is still reading.
+                    img = server.batch_image(self.path)
+                    if img is not None:
+                        return self._send(200, img.read_bytes(), mimetypes.guess_type(img.name)[0] or "image/jpeg")
+                    return self._send(404, b"not found", "text/plain")
                 batch, sub = server._resolve(self.path)
                 if batch is None:
                     return self._send(404, b"not found (still being read?)", "text/plain")

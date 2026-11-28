@@ -120,6 +120,7 @@ def identify_batch(
     model: str = DEFAULT_MODEL,
     effort: str = DEFAULT_EFFORT,
     progress=print,
+    on_card=None,
 ) -> list[dict]:
     """Identify every card in a `lister split` output folder; writes cards.json there."""
     from .costs import money, record
@@ -140,7 +141,10 @@ def identify_batch(
         else:
             total += usd
 
+    n_cards = len(manifest["cards"])
     for entry in manifest["cards"]:
+        if on_card and results:
+            on_card(len(results), n_cards)
         front = folder / entry["front"]
         back = folder / entry["back"] if entry.get("back") else None
         progress(f"Card {entry['position']}: reading…")
@@ -159,6 +163,8 @@ def identify_batch(
         progress(f"Card {entry['position']}: {title}  [{info.confidence}, {money(usd)}]")
         results.append({**entry, "info": info.model_dump(), "title": title, "error": None, "cost_usd": usd})
 
+    if on_card:
+        on_card(len(results), len(results))
     (folder / "cards.json").write_text(json.dumps(
         {"model": model, "cost_usd": round(total, 4), "cards": results}, indent=2))
     n = len(results)

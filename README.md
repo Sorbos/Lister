@@ -65,6 +65,11 @@ Scans left in the inbox are picked up next time.
 - The last scan waits 10 minutes for its back (`lister watch --wait 5` to change), then goes
   ahead as fronts only.
 
+**Progress:** the Batches page updates by itself every 2 seconds. A panel at the top shows how
+many scans are waiting, what Lister is doing right now (matching or cutting out scans), and how far
+Claude has got; each batch being read has a progress bar ("Reading card 6 of 9"), and batches
+waiting their turn show their place in line. If Lister isn't running, the panel says so.
+
 **Pages:** a bar at the top links **Batches** (every batch; click one to review it), **Settings**
 (scans folder, wait time) and **Costs** (what Claude has cost: last 7 days, this month, all time,
 per batch). It's there whenever Lister runs with `lister watch` or `lister batches`.

@@ -308,3 +308,58 @@ def test_batch_page_gets_nav_in_hub_mode_only(tmp_path):
         finally:
             srv.httpd.shutdown()
             srv.httpd.server_close()
+
+
+def test_progress_while_reading_and_activity(tmp_path):
+    """Each card read updates the batch's progress; the batch list shows a bar and what's happening."""
+    import time as _time
+
+    seen = []
+
+    def slow_identify(folder, on_card=None, **_):
+        for i in range(1, 10):
+            on_card(i, 9)
+            seen.append(json.loads((Path(folder) / "status.json").read_text()))
+        return []
+
+    w = Watcher(tmp_path / "L", clock=Clock(), progress=lambda *_: None, identify=slow_identify, background=False,
+                client=None, auto_identify=True)
+    drop(w, SAMPLES / "fronts_01.jpg", "IMG_1.jpg")
+    folder = w.make_batch(w.inbox / "IMG_1.jpg", None)
+    assert [s["done"] for s in seen] == list(range(1, 10)) and all(s["stage"] == "reading" for s in seen)
+    assert json.loads((folder / "status.json").read_text())["stage"] == "ready"
+
+    # Freeze a batch mid-read and another in line, then look at the list page.
+    (folder / "status.json").write_text(json.dumps({"stage": "reading", "done": 4, "total": 9, "message": ""}))
+    drop(w, SAMPLES / "fronts_01.jpg", "IMG_2.jpg")
+    w.auto_identify = False
+    second = w.make_batch(w.inbox / "IMG_2.jpg", None)
+    (second / "status.json").write_text(json.dumps({"stage": "queued", "queued_at": 1}))
+    drop(w, SAMPLES / "fronts_01.jpg", "IMG_3.jpg")
+    w._activity("Matching IMG_3.jpg with IMG_4.jpg")
+
+    srv = ReviewServer(w.root, port=0, hub=True)
+    threading.Thread(target=srv.httpd.serve_forever, daemon=True).start()
+    try:
+        live = get(srv.url + "?partial=1")[1].decode()
+        assert "Reading card 5 of 9" in live and 'style="width:44%"' in live
+        assert "waiting to be read (next)" in live
+        assert "<b>1</b> scan waiting" in live and "Matching IMG_3.jpg with IMG_4.jpg" in live
+        assert "<html" not in live  # just the live part
+        assert "Reading card 5 of 9" in get(srv.url)[1].decode()  # and in the full page
+        # Their pictures show straight away, but only card pictures from the manifest.
+        assert get(srv.url + f"b/{second.name}/img/card_01_front.jpg")[0] == 200
+        for bad in (f"b/{second.name}/img/status.json", f"b/{second.name}/img/../manifest.json", "b/../img/x.jpg"):
+            with pytest.raises(urllib.error.HTTPError):
+                get(srv.url + bad)
+        # Batches still being read can't be opened yet.
+        with pytest.raises(urllib.error.HTTPError):
+            get(srv.url + f"b/{second.name}/api/state")
+        # A stale heartbeat means the watcher isn't running.
+        act = json.loads((w.root / "activity.json").read_text())
+        act["time"] = _time.time() - 60
+        (w.root / "activity.json").write_text(json.dumps(act))
+        assert "isn&#39;t watching" in get(srv.url + "?partial=1")[1].decode()
+    finally:
+        srv.httpd.shutdown()
+        srv.httpd.server_close()

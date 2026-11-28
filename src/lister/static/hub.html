@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="5">
 <title>Lister Batches</title>
 <style>
 :root { color-scheme: light; --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #677085; --line: #dde1e8; --accent: #2b6cb0;
@@ -27,6 +26,17 @@ a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
 .chip.warn { background: var(--warn-bg); color: var(--warn); }
 .chip.err { background: var(--err-bg); color: var(--err); }
 small { color: var(--muted); }
+.grow { flex: 1; min-width: 0; }
+.activity { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+            margin-bottom: 12px; line-height: 1.8; }
+.activity.off { color: var(--warn); background: var(--warn-bg); border-color: transparent; }
+.progress { margin-top: 6px; display: grid; gap: 4px; max-width: 420px; }
+.bar { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .6s ease; }
+.spin { display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px;
+        border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } .bar span { transition: none; } }
 .problems li { display: block; color: var(--err); background: var(--err-bg); border-color: transparent; }
 </style>
 </head>
@@ -34,13 +44,18 @@ small { color: var(--muted); }
 {{NAV}}
 <header>
   <h1>Batches</h1>
-  <p>Watching {{INBOX}} (<a href="/settings">change</a>). This page refreshes every few seconds.</p>
+  <p>Watching {{INBOX}} (<a href="/settings">change</a>). This page updates by itself.</p>
 </header>
-<main>
-  <ul>
-{{ROWS}}
-  </ul>
-  {{PROBLEMS}}
-</main>
+<main id="live">{{LIVE}}</main>
+<script>
+// Update the list every 2 seconds without reloading (no flicker, keeps your scroll position).
+async function tick() {
+  try {
+    const r = await fetch("/?partial=1", { cache: "no-store" });
+    if (r.ok) document.getElementById("live").innerHTML = await r.text();
+  } catch (e) { /* Lister stopped; try again next time */ }
+}
+setInterval(tick, 2000);
+</script>
 </body>
 </html>

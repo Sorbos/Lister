@@ -160,9 +160,27 @@ class Watcher:
         return "pair", f"cards line up but front/back unclear ({check.reason}); please confirm"
 
     # ------------------------------------------------------------ main step
+    def _activity(self, now: str = "") -> None:
+        """ROOT/activity.json: a heartbeat the batch list page shows (scans waiting, what's happening)."""
+        try:
+            inbox = self.inbox
+            waiting = sum(1 for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXT) \
+                if inbox.is_dir() else 0
+            (self.root / "activity.json").write_text(json.dumps(
+                {"time": time.time(), "waiting": waiting, "now": now, "inbox": str(inbox)}))
+        except OSError:
+            pass
+
     def poll(self) -> None:
         """Look at the inbox once and make whatever batches are ready."""
+        try:
+            self._poll()
+        finally:
+            self._activity("")
+
+    def _poll(self) -> None:
         ready, busy = self._scan_inbox()
+        self._activity("")
         while ready:
             a = ready[0]
             try:
@@ -179,6 +197,7 @@ class Watcher:
                     self._problem(b, f"Couldn't find cards: {e}")
                     ready.pop(1)
                     continue
+                self._activity(f"Matching {a.name} with {b.name}")
                 decision, note = self.decide(a, b)
                 if decision == "pair":
                     self.make_batch(a, b, note)
@@ -203,6 +222,7 @@ class Watcher:
         name = f"{datetime.fromtimestamp(self.clock()):%Y-%m-%d_%H%M}_{front.stem}"
         folder = _unique(self.batches / name)
         fronts, backs = self._cards(front), (self._cards(back) if back else None)
+        self._activity(f"Cutting out cards from {front.name}" + (f" and {back.name}" if back else ""))
         _status(folder, "reading", "cutting out cards")
         write_batch(fronts, backs, folder, {"fronts": front.name, "backs": back.name if back else None})
         keep = _unique(self.done / folder.name)
@@ -215,7 +235,7 @@ class Watcher:
         kind = "fronts + backs" if back else "fronts only"
         self.progress(f"New batch {folder.name}: {len(fronts)} cards, {kind}" + (f" — {note}" if note else ""))
         if self.auto_identify:
-            _status(folder, "reading", "reading cards with Claude")
+            _status(folder, "queued", note, queued_at=time.time())
             job = (self.pool.submit if self.pool else _run_now)(self._identify, folder, note)
             self.jobs.append(job)
         else:
@@ -226,6 +246,9 @@ class Watcher:
     def _identify(self, folder: Path, note: str) -> None:
         try:
             kw = {"client": self.client} if self.client is not None else {}
+            total = len(json.loads((folder / "manifest.json").read_text())["cards"])
+            _status(folder, "reading", note, done=0, total=total)
+            kw["on_card"] = lambda done, n: _status(folder, "reading", note, done=done, total=n)
             results = self.identify(folder, model=self.model, progress=lambda m: None, **kw)
             errors = [r["error"] for r in results if r.get("error")]
             if not errors:
@@ -275,9 +298,11 @@ def _run_now(fn, *args):
     fn(*args)
 
 
-def _status(folder: Path, stage: str, message: str = "") -> None:
+def _status(folder: Path, stage: str, message: str = "", **extra) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "status.json").write_text(json.dumps({"stage": stage, "message": message}))
+    tmp = folder / "status.tmp"
+    tmp.write_text(json.dumps({"stage": stage, "message": message, **extra}))
+    tmp.replace(folder / "status.json")
 
 
 def _unique(path: Path) -> Path:
