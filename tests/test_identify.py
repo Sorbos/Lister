@@ -135,4 +135,22 @@ def test_identify_without_key_says_where_to_put_it(tmp_path, monkeypatch, capsys
     batch = tmp_path / "root" / "batches" / "b1"
     assert main(["split", str(SAMPLES / "fronts_01.jpg"), "-o", str(batch)]) == 0
     assert main(["identify", str(batch)]) == 1
-    assert str(tmp_path / "root" / ".env") in capsys.readouterr().err
+    assert "no ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_identify_finds_env_one_or_two_levels_up(tmp_path, monkeypatch):
+    """C:\\Lister\\test and C:\\Lister\\batches\\<batch> both find C:\\Lister\\.env."""
+    import os
+
+    import lister.identify as ident
+
+    seen = []
+    monkeypatch.setattr(ident, "identify_batch", lambda folder, **kw: seen.append(os.environ.get("ANTHROPIC_API_KEY")) or [])
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "Lister"
+    for batch in (root / "test", root / "batches" / "b1"):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        main(["split", str(SAMPLES / "fronts_01.jpg"), "-o", str(batch)])
+        (root / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-test\n")
+        assert main(["identify", str(batch)]) == 0
+    assert seen == ["sk-ant-test", "sk-ant-test"]

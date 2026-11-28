@@ -41,9 +41,13 @@ def cmd_identify(args: argparse.Namespace) -> int:
         print(f"error: {args.folder or '(no folder given)'} isn't a batch folder (no manifest.json). "
               "Give the folder `lister split` wrote, or a folder under <Lister>/batches.", file=sys.stderr)
         return 1
-    load_dotenv(folder.parent.parent / ".env")  # …or the Lister folder (ROOT/batches/<batch>)
+    # …or the nearest .env above the batch (e.g. C:\\Lister\\.env for C:\\Lister\\batches\\<batch>)
+    for parent in list(folder.parents)[:4]:
+        if (parent / ".env").is_file():
+            load_dotenv(parent / ".env")
+            break
     if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        print(f"error: no ANTHROPIC_API_KEY. Put it in {folder.parent.parent / '.env'} or the current folder's .env",
+        print(f"error: no ANTHROPIC_API_KEY. Put it in a .env file in {folder.parent} (or a folder above it)",
               file=sys.stderr)
         return 1
     from .identify import DEFAULT_EFFORT, DEFAULT_MODEL, identify_batch
